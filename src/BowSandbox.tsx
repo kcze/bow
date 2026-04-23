@@ -72,18 +72,20 @@ import {
   BowSlot, QuiverSlot, ItemSlot,
   QUIVER_ACCENT,
 } from './bow/ui/slots';
-import { UpgradeCard, LevelUpParticles, ProgressionPanel, DebugPanel, familiesForUpgrade, UpgradeGallery } from './bow/ui/overlays';
+import { UpgradeCard, LevelUpParticles, ProgressionPanel, DebugPanel, familiesForUpgrade } from './bow/ui/overlays';
 import { playSfx, unlockSfx, getMasterVolume, setMasterVolume } from './bow/sounds/player';
 import { startMusic, getMusicVolume, setMusicVolume, setMusicDuck, getMusicBeat, sampleMusicEnergy } from './bow/sounds/music';
+import { useTable, useReducer as useStdbReducer, useSpacetimeDB } from 'spacetimedb/react';
+import { tables, reducers } from './module_bindings';
+import type { Score as OnlineScore } from './module_bindings/types';
 
 // Dev-only: picker chips for jumping straight into late-game pools. The
 // actual starting wave is whichever chip the player selects in the loadout
 // screen — this is just the menu of options. The default (first element)
 // is what the picker initialises to.
 // ─── Leaderboard ────────────────────────────────────────────────────────────
-// Top-10 local scoreboard kept in localStorage. Sorted by survival time —
-// that's the headline stat for an arena survival game; level / kills /
-// damage are surfaced as tiebreaker context.
+// Top-10 local scoreboard kept in localStorage. Damage is the headline stat
+// (it feeds XP + levels), followed by time → kills → level as tiebreakers.
 interface Score {
   name: string;
   level: number;
@@ -92,8 +94,22 @@ interface Score {
   time: number;   // seconds survived
   ts: number;     // epoch ms — also used to identify the just-finished run
 }
-const SCORES_LS = 'fire.scores.v1';
+// v2 bumps the key so older time-sorted rows don't leak into the new
+// damage-primary ordering with possibly-incomparable tie-breaker semantics.
+const SCORES_LS = 'fire.scores.v2';
 const MAX_SCORES = 10;
+
+// Mirror of the server-side `sanitizeName`. Strips control + combining
+// characters so bidi overrides / zero-widths / Zalgo can't sneak onto the
+// public leaderboard. Server re-applies the same rule authoritatively —
+// this copy just keeps the local UI consistent with what's accepted.
+function sanitizePlayerName(raw: string): string {
+  const trimmed = raw
+    .replace(/[\p{C}\p{M}]/gu, '')
+    .trim()
+    .slice(0, 20);
+  return trimmed || 'Bowman';
+}
 
 function readScores(): Score[] {
   try {
@@ -108,9 +124,16 @@ function readScores(): Score[] {
   } catch { return []; }
 }
 
+function compareScores(a: Score, b: Score) {
+  if (b.damage !== a.damage) return b.damage - a.damage;
+  if (b.time !== a.time)     return b.time - a.time;
+  if (b.kills !== a.kills)   return b.kills - a.kills;
+  return b.level - a.level;
+}
+
 function saveScore(score: Score): Score[] {
   const all = [...readScores(), score]
-    .sort((a, b) => b.time - a.time)
+    .sort(compareScores)
     .slice(0, MAX_SCORES);
   try { localStorage.setItem(SCORES_LS, JSON.stringify(all)); } catch { /* ignore */ }
   return all;
@@ -122,7 +145,6 @@ export default function BowSandbox() {
   const startGameRef = useRef<(() => void) | null>(null);
   const resetGameRef = useRef<(() => void) | null>(null);
   const togglePauseRef = useRef<(() => void) | null>(null);
-  const applyUpgradeByIdRef = useRef<((id: string) => void) | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [cardsReady, setCardsReady] = useState(false);
   const [hoveredCardId, setHoveredCardId] = useState<string | null>(null);
@@ -136,7 +158,7 @@ export default function BowSandbox() {
     return 'Bowman';
   });
   const commitPlayerName = (next: string) => {
-    const trimmed = next.trim().slice(0, 20) || 'Bowman';
+    const trimmed = sanitizePlayerName(next);
     setPlayerName(trimmed);
     try { localStorage.setItem('fire.playerName', trimmed); } catch { /* ignore */ }
   };
@@ -144,6 +166,15 @@ export default function BowSandbox() {
   // Timestamp of the score just saved for this run — lets the game-over
   // leaderboard highlight which row is yours.
   const [lastScoreTs, setLastScoreTs] = useState<number | null>(null);
+
+  // Live online leaderboard — SpacetimeDB pushes updates over the open
+  // websocket; `onlineReady` flips true once the initial subscription has
+  // returned so we can distinguish "connecting" from "no scores yet".
+  const [onlineScores, onlineReady] = useTable(tables.score);
+  const stdb = useSpacetimeDB();
+  const myIdentityHex = stdb.identity ? stdb.identity.toHexString() : null;
+
+  const submitScoreOnline = useStdbReducer(reducers.submitScore);
   const [hud, setHud] = useState<HudState>({
     hp: PLAYER_MAX_HP, maxHp: PLAYER_MAX_HP,
     arrows: QUIVER_CAPACITY, maxArrows: QUIVER_CAPACITY,
@@ -1467,16 +1498,6 @@ export default function BowSandbox() {
         dismissLevelUp();
       };
 
-      // Pause-menu "dev sandbox" hook: clicking an icon in the upgrade
-      // gallery applies that upgrade directly (bypasses card rolls + the
-      // needBow/needQuiver gates). Lets the tester swap gear mid-run.
-      applyUpgradeByIdRef.current = (id: string) => {
-        const u = UPGRADES.find(x => x.id === id);
-        if (!u) return;
-        playSfx('ui_card_click');
-        applyUpgrade(u);
-      };
-
       resetGameRef.current = () => { resetGame(); };
       togglePauseRef.current = () => { togglePause(); };
 
@@ -2515,7 +2536,6 @@ export default function BowSandbox() {
       startGameRef.current = null;
       resetGameRef.current = null;
       togglePauseRef.current = null;
-      applyUpgradeByIdRef.current = null;
     };
   }, []);
 
@@ -2530,21 +2550,40 @@ export default function BowSandbox() {
   // Persist a score row the moment the game-over overlay appears. Resetting
   // (awaitingStart flips back on) clears the "just-scored" highlight so a
   // fresh run starts clean.
+  // Guards against React StrictMode's double-mount re-running the effect
+  // and submitting the same run twice. Cleared on awaitingStart so a new
+  // run is free to submit.
+  const submittedRunRef = useRef(false);
   useEffect(() => {
-    if (hud.dead) {
+    if (hud.dead && !submittedRunRef.current) {
+      submittedRunRef.current = true;
       const ts = Date.now();
+      const damage = Math.round(hud.damageDealt);
+      const timeSeconds = Math.max(1, Math.round(hud.timeSurvived));
       const next: Score = {
         name: playerName,
         level: hud.level,
         kills: hud.kills,
-        damage: Math.round(hud.damageDealt),
+        damage,
         time: hud.timeSurvived,
         ts,
       };
       setScores(saveScore(next));
       setLastScoreTs(ts);
+      // Fire-and-forget online submission — the server rejects with
+      // SenderError if validation fails (rate limit, impossible stats,
+      // etc.). We swallow errors because a rejected online submit should
+      // never block the local save or the game-over UI.
+      submitScoreOnline({
+        name: playerName,
+        level: hud.level,
+        kills: hud.kills,
+        damage,
+        timeSeconds,
+      }).catch(() => { /* ignore */ });
     } else if (hud.awaitingStart) {
       setLastScoreTs(null);
+      submittedRunRef.current = false;
     }
   // Only fire when the dead / awaitingStart transitions actually change;
   // the body reads whatever hud values are current.
@@ -2740,13 +2779,12 @@ export default function BowSandbox() {
               }}
             >RESUME</button>
             <div style={{ fontSize: 10, color: '#667', letterSpacing: 1, marginBottom: 18 }}>or press ESC</div>
-            <div style={{ maxWidth: 280, margin: '0 auto 10px' }}>
+            <div style={{ maxWidth: 280, margin: '0 auto' }}>
               <VolumeSlider label="Music" value={musicVol}
                 onChange={(v) => { setMusicVol(v); setMusicVolume(v); }} accent="#66aaff" />
               <VolumeSlider label="Sound effects" value={sfxVol}
                 onChange={(v) => { setSfxVol(v); setMasterVolume(v); }} accent="#ffaa66" />
             </div>
-            <UpgradeGallery onPick={(id) => applyUpgradeByIdRef.current?.(id)} />
           </div>
         </div>
       )}
@@ -2852,22 +2890,11 @@ export default function BowSandbox() {
           kills={hud.kills}
           damageDealt={hud.damageDealt}
           timeSurvived={hud.timeSurvived}
-          playerName={playerName}
-          onPlayerName={(next) => {
-            commitPlayerName(next);
-            // Keep the just-saved leaderboard row in sync with the name the
-            // player actually wants on record.
-            if (lastScoreTs != null) {
-              const trimmed = next.trim().slice(0, 20) || 'Bowman';
-              const updated = readScores().map(s =>
-                s.ts === lastScoreTs ? { ...s, name: trimmed } : s
-              );
-              try { localStorage.setItem(SCORES_LS, JSON.stringify(updated)); } catch { /* ignore */ }
-              setScores(updated);
-            }
-          }}
           scores={scores}
           highlightTs={lastScoreTs}
+          onlineScores={onlineScores}
+          onlineReady={onlineReady}
+          myIdentityHex={myIdentityHex}
           onRestart={() => {
             // Reset sets awaitingStart=true, then startGame immediately
             // flips it off and spawns the welcome grunt — the player skips
@@ -2888,6 +2915,9 @@ export default function BowSandbox() {
           onMusicVol={(v) => { setMusicVol(v); setMusicVolume(v); }}
           onSfxVol={(v) => { setSfxVol(v); setMasterVolume(v); }}
           scores={scores}
+          onlineScores={onlineScores}
+          onlineReady={onlineReady}
+          myIdentityHex={myIdentityHex}
         />
       )}
 
@@ -2934,7 +2964,7 @@ function Leaderboard({ scores, highlightTs, title = 'LEADERBOARD' }: {
       <div style={{ textAlign: 'left' }}>
         <div style={{ fontSize: 9, color: '#88a', letterSpacing: 2, marginBottom: 6 }}>{title}</div>
         <div style={{ fontSize: 11, color: '#556', letterSpacing: 1, textAlign: 'center', padding: '8px 0' }}>
-          No scores yet — survive a run to claim first.
+          No scores yet — die trying to claim first.
         </div>
       </div>
     );
@@ -2948,18 +2978,20 @@ function Leaderboard({ scores, highlightTs, title = 'LEADERBOARD' }: {
   };
   const cRank: React.CSSProperties  = { width: 22, textAlign: 'right' };
   const cName: React.CSSProperties  = { flex: 1, paddingLeft: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-  const cTime: React.CSSProperties  = { width: 48, textAlign: 'right' };
-  const cLvl: React.CSSProperties   = { width: 30, textAlign: 'right' };
+  const cDmg: React.CSSProperties   = { width: 46, textAlign: 'right' };
+  const cTime: React.CSSProperties  = { width: 46, textAlign: 'right' };
   const cKills: React.CSSProperties = { width: 36, textAlign: 'right' };
+  const cLvl: React.CSSProperties   = { width: 28, textAlign: 'right' };
   return (
     <div style={{ textAlign: 'left' }}>
       <div style={{ fontSize: 9, color: '#88a', letterSpacing: 2, marginBottom: 6 }}>{title}</div>
       <div style={headerStyle}>
         <div style={cRank}>#</div>
         <div style={cName}>NAME</div>
+        <div style={cDmg}>DMG</div>
         <div style={cTime}>TIME</div>
-        <div style={cLvl}>LVL</div>
         <div style={cKills}>KILLS</div>
+        <div style={cLvl}>LVL</div>
       </div>
       {scores.map((s, i) => {
         const mine = highlightTs != null && s.ts === highlightTs;
@@ -2972,14 +3004,65 @@ function Leaderboard({ scores, highlightTs, title = 'LEADERBOARD' }: {
           }}>
             <div style={cRank}>{i + 1}</div>
             <div style={cName}>{s.name}</div>
+            <div style={cDmg}>{s.damage}</div>
             <div style={cTime}>{fmtMMSS(s.time)}</div>
-            <div style={cLvl}>{s.level}</div>
             <div style={cKills}>{s.kills}</div>
+            <div style={cLvl}>{s.level}</div>
           </div>
         );
       })}
     </div>
   );
+}
+
+// Renders the live SpacetimeDB score table. Converts OnlineScore rows into
+// the local Score shape so the existing Leaderboard component can render
+// them without duplicating column layout / styling. Uses the u64 id cast to
+// Number for ts (rank-highlight) — ids are monotonic and fit comfortably in
+// Number for the lifetime of a leaderboard. Falls back to a "connecting"
+// placeholder while the subscription hasn't returned.
+function OnlineLeaderboard({ scores, myIdentityHex, title = 'ONLINE LEADERBOARD', ready }: {
+  scores: readonly OnlineScore[];
+  myIdentityHex: string | null;
+  title?: string;
+  ready: boolean;
+}) {
+  const mapped: Score[] = useMemo(() => {
+    return [...scores]
+      .map(s => ({
+        name: s.name,
+        level: s.level,
+        kills: s.kills,
+        damage: s.damage,
+        time: s.timeSeconds,
+        ts: Number(s.id),
+        _identity: s.identity.toHexString(),
+      } as Score & { _identity: string }))
+      .sort(compareScores)
+      .slice(0, MAX_SCORES);
+  }, [scores]);
+
+  const highlightTs = useMemo(() => {
+    if (!myIdentityHex) return null;
+    const mine = mapped.find(s => (s as Score & { _identity: string })._identity === myIdentityHex);
+    return mine ? mine.ts : null;
+  }, [mapped, myIdentityHex]);
+
+  if (!ready) {
+    return (
+      <div style={{ textAlign: 'left' }}>
+        <div style={{ fontSize: 9, color: '#88a', letterSpacing: 2, marginBottom: 6 }}>{title}</div>
+        <div style={{
+          fontSize: 11, color: '#556', letterSpacing: 1,
+          textAlign: 'center', padding: '8px 0',
+          border: '1px dashed #333', borderRadius: 4,
+        }}>
+          Connecting…
+        </div>
+      </div>
+    );
+  }
+  return <Leaderboard scores={mapped} highlightTs={highlightTs} title={title} />;
 }
 
 function ControlsHint() {
@@ -3024,7 +3107,7 @@ function ControlsHint() {
 function StartScreen({
   playerName, onPlayerName, onStart,
   musicVol, sfxVol, onMusicVol, onSfxVol,
-  scores,
+  scores, onlineScores, onlineReady, myIdentityHex,
 }: {
   playerName: string;
   onPlayerName: (n: string) => void;
@@ -3033,6 +3116,9 @@ function StartScreen({
   onMusicVol: (v: number) => void;
   onSfxVol: (v: number) => void;
   scores: Score[];
+  onlineScores: readonly OnlineScore[];
+  onlineReady: boolean;
+  myIdentityHex: string | null;
 }) {
   // Empty draft when the stored name is still the default — we show it as a
   // placeholder instead so the field reads as inviting rather than prefilled.
@@ -3123,16 +3209,7 @@ function StartScreen({
         width: 280, display: 'flex', flexDirection: 'column', gap: 18,
       }}>
         <Leaderboard scores={scores} title="LOCAL LEADERBOARD" />
-        <div style={{ textAlign: 'left' }}>
-          <div style={{ fontSize: 9, color: '#88a', letterSpacing: 2, marginBottom: 6 }}>ONLINE LEADERBOARD</div>
-          <div style={{
-            fontSize: 11, color: '#556', letterSpacing: 1,
-            textAlign: 'center', padding: '8px 0',
-            border: '1px dashed #333', borderRadius: 4,
-          }}>
-            Coming soon
-          </div>
-        </div>
+        <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} />
       </div>
     </div>
   );
@@ -3142,19 +3219,18 @@ function StartScreen({
 // This is the only moment the player is invited to change their name, so
 // local scores + the eventual online board get a fresh prompt between runs.
 function GameOverScreen({
-  level, kills, damageDealt, timeSurvived, playerName, onPlayerName,
+  level, kills, damageDealt, timeSurvived,
   scores, highlightTs, onRestart,
+  onlineScores, onlineReady, myIdentityHex,
 }: {
   level: number; kills: number; damageDealt: number; timeSurvived: number;
-  playerName: string;
-  onPlayerName: (n: string) => void;
   scores: Score[];
   highlightTs: number | null;
   onRestart: () => void;
+  onlineScores: readonly OnlineScore[];
+  onlineReady: boolean;
+  myIdentityHex: string | null;
 }) {
-  const [draft, setDraft] = useState(playerName);
-  useEffect(() => { setDraft(playerName); }, [playerName]);
-  const commit = () => onPlayerName(draft);
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
@@ -3178,35 +3254,14 @@ function GameOverScreen({
         }}>GAME OVER</div>
 
         <div style={{
-          marginBottom: 14, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-          opacity: 0, animation: 'fadeUp 420ms ease forwards 200ms',
-        }}>
-          <label style={{ fontSize: 9, color: '#88a', letterSpacing: 2 }}>NAME</label>
-          <input
-            type="text"
-            value={draft}
-            placeholder="Bowman"
-            onChange={e => setDraft(e.currentTarget.value)}
-            onBlur={commit}
-            onKeyDown={(e) => { if (e.key === 'Enter') { commit(); (e.currentTarget as HTMLInputElement).blur(); } }}
-            maxLength={20}
-            data-no-draw-start
-            style={{
-              background: 'rgba(14,16,24,0.8)', border: '1px solid #334',
-              borderRadius: 4, color: '#fff', padding: '4px 8px',
-              fontFamily: 'monospace', fontSize: 13, textAlign: 'center', width: 180,
-            }}
-          />
-        </div>
-        <div style={{
           marginBottom: 20,
           opacity: 0, animation: 'fadeUp 420ms ease forwards 300ms',
         }}>
           {[
-            ['Level', level],
-            ['Kills', kills],
             ['Damage', damageDealt.toFixed(0)],
             ['Time', fmtMMSS(timeSurvived)],
+            ['Kills', kills],
+            ['Level', level],
           ].map(([label, value]) => (
             <div key={label as string} style={{ fontSize: 14, color: '#ccd', marginBottom: 4 }}>
               <span style={{ color: '#88a' }}>{label}:</span>{' '}
@@ -3217,7 +3272,7 @@ function GameOverScreen({
 
         <button
           type="button"
-          onClick={() => { commit(); onRestart(); }}
+          onClick={() => onRestart()}
           data-no-draw-start
           style={{
             display: 'block', margin: '0 auto',
@@ -3249,16 +3304,7 @@ function GameOverScreen({
           opacity: 0, animation: 'fadeIn 420ms ease forwards 420ms',
         }}>
           <Leaderboard scores={scores} highlightTs={highlightTs} title="LOCAL LEADERBOARD" />
-          <div style={{ textAlign: 'left' }}>
-            <div style={{ fontSize: 9, color: '#88a', letterSpacing: 2, marginBottom: 6 }}>ONLINE LEADERBOARD</div>
-            <div style={{
-              fontSize: 11, color: '#556', letterSpacing: 1,
-              textAlign: 'center', padding: '8px 0',
-              border: '1px dashed #333', borderRadius: 4,
-            }}>
-              Coming soon
-            </div>
-          </div>
+          <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} />
         </div>
       </div>
     </div>

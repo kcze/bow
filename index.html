@@ -4,10 +4,26 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Narrow the attack surface if the vibej.am widget or any third
+         party is ever compromised. `script-src` is self + the jam widget
+         origin; `connect-src` pins the WebSocket to Maincloud. -->
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://vibej.am;
+      connect-src 'self' ws://localhost:* wss://maincloud.spacetimedb.com https://maincloud.spacetimedb.com;
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: blob:;
+      font-src 'self' data:;
+      base-uri 'self';
+      object-src 'none';
+    " />
     <title>🏹 Bow</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!-- Vibe Jam 2026 widget — required per jam rule #2.
+         Games without it are disqualified. -->
+    <script async src="https://vibej.am/2026/widget.js"></script>
   </body>
 </html>

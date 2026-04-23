@@ -3,3 +3,6 @@ dist/
 .env
 .env.local
 *.tsbuildinfo
+.claude/
+# Local spacetime CLI config — DB name is per-developer workspace state.
+spacetime.local.json
