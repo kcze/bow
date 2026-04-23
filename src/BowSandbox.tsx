@@ -146,6 +146,15 @@ export default function BowSandbox() {
   const startGameRef = useRef<(() => void) | null>(null);
   const resetGameRef = useRef<(() => void) | null>(null);
   const togglePauseRef = useRef<(() => void) | null>(null);
+  // Called from the ticker the instant state.dead flips true, so the saved
+  // score uses the ticker's authoritative values rather than a delayed
+  // hud-state snapshot. Without this, the save effect closes over the
+  // first hud.dead=true render's values, which can lag behind the real
+  // state by a setHud interval (up to 80ms) — the dying phase's last
+  // arrow impacts land in state but not in hud yet.
+  const finalizeRunRef = useRef<((run: {
+    level: number; kills: number; damage: number; timeSurvived: number;
+  }) => void) | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [cardsReady, setCardsReady] = useState(false);
   const [hoveredCardId, setHoveredCardId] = useState<string | null>(null);
@@ -1621,6 +1630,15 @@ export default function BowSandbox() {
             state.dying = false;
             state.dead = true;
             state.paused = true;
+            // Ticker is authoritative about run stats at the instant of
+            // death — setHud is throttled to 80ms, so the React hud can
+            // trail the ticker's state by up to a frame. Capture here.
+            finalizeRunRef.current?.({
+              level: state.level,
+              kills: state.kills,
+              damage: state.damageDealt,
+              timeSurvived: state.timeSurvived,
+            });
           }
         }
         const updatesPaused = state.paused || state.dead;
@@ -2551,49 +2569,54 @@ export default function BowSandbox() {
   // Persist a score row the moment the game-over overlay appears. Resetting
   // (awaitingStart flips back on) clears the "just-scored" highlight so a
   // fresh run starts clean.
-  // Guards against React StrictMode's double-mount re-running the effect
-  // and submitting the same run twice. Cleared on awaitingStart so a new
-  // run is free to submit.
+  // Guards against double-submission (StrictMode remounts or duplicate
+  // dying→dead transitions if the ticker ever loops).
   const submittedRunRef = useRef(false);
+
+  // Install the ticker callback that finalizes a run. Kept as an effect
+  // so it closes over the latest playerName / submit reducer — each run
+  // uses whatever name was set at the start screen.
   useEffect(() => {
-    if (hud.dead && !submittedRunRef.current) {
+    finalizeRunRef.current = (run) => {
+      if (submittedRunRef.current) return;
       submittedRunRef.current = true;
       const ts = Date.now();
-      const damage = Math.round(hud.damageDealt);
-      const timeSeconds = Math.max(1, Math.round(hud.timeSurvived));
+      const damage = Math.round(run.damage);
+      const timeSeconds = Math.max(1, Math.round(run.timeSurvived));
       const next: Score = {
         name: playerName,
-        level: hud.level,
-        kills: hud.kills,
+        level: run.level,
+        kills: run.kills,
         damage,
-        time: hud.timeSurvived,
+        time: run.timeSurvived,
         ts,
       };
       setScores(saveScore(next));
       setLastScoreTs(ts);
-      // Fire-and-forget online submission — the server rejects with
+      // Fire-and-forget online submission — server rejects with
       // SenderError if validation fails (rate limit, impossible stats,
-      // etc.). We swallow errors because a rejected online submit should
-      // never block the local save or the game-over UI. Forks running
-      // outside the allowlisted hosts skip this entirely so their runs
-      // don't pollute the canonical leaderboard by default.
+      // etc.). Swallowed because a rejected online submit must not
+      // block the local save or the game-over UI. Forks running outside
+      // the allowlisted hosts skip this entirely.
       if (canSubmitScores) {
         submitScoreOnline({
           name: playerName,
-          level: hud.level,
-          kills: hud.kills,
+          level: run.level,
+          kills: run.kills,
           damage,
           timeSeconds,
         }).catch(() => { /* ignore */ });
       }
-    } else if (hud.awaitingStart) {
+    };
+  }, [playerName, submitScoreOnline]);
+
+  // Reset the submitted guard + highlighted row when a fresh run begins.
+  useEffect(() => {
+    if (hud.awaitingStart) {
       setLastScoreTs(null);
       submittedRunRef.current = false;
     }
-  // Only fire when the dead / awaitingStart transitions actually change;
-  // the body reads whatever hud values are current.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hud.dead, hud.awaitingStart]);
+  }, [hud.awaitingStart]);
 
   const levelUpHighlightFamilies = useMemo(() => {
     const set = new Set<string>();
