@@ -1,0 +1,168 @@
+{
+  "$comment": "Single source of truth for every sound effect in the game. Edit prompts/durations here, then run `npm run gen:sfx` to (re)generate missing files. Use `npm run gen:sfx -- --only <id>` to regenerate a specific sound. ElevenLabs requires duration >= 0.5s, so short hits are generated at 0.5s and may have leading/trailing silence we trim at playback time. Tier-2 bow variants (split3/seeker2/ricochet2/fire2) play the same file as their tier-1 sibling at a lower pitch — see shootSoundFor() in BowSandbox.tsx. Same rule applies to the full-quiver reload, which plays quiver_reload pitched higher. See README.md in this folder for details.",
+  "defaults": {
+    "promptInfluence": 0.7,
+    "outputFormat": "mp3_44100_128",
+    "modelId": "eleven_text_to_sound_v2"
+  },
+  "sounds": [
+    {
+      "id": "shoot_basic",
+      "category": "shoot",
+      "file": "shoot/basic.mp3",
+      "usedBy": "bow=basic",
+      "prompt": "short pleasant soft bloom with a warm airy body and a gentle bright shimmer tail, satisfying distinct audible one-shot, not harsh, no instrument",
+      "duration": 0.5
+    },
+    {
+      "id": "shoot_split",
+      "category": "shoot",
+      "file": "shoot/split.mp3",
+      "usedBy": "bow=split2 at natural pitch, bow=split3 pitched lower",
+      "prompt": "short soft airy whoosh release with a subtle wide spread and gentle breathy motion, pleasant one-shot, not harsh, no instrument, no string, no guitar",
+      "duration": 0.5
+    },
+    {
+      "id": "shoot_seeker",
+      "category": "shoot",
+      "file": "shoot/seeker.mp3",
+      "usedBy": "bow=seeker at natural pitch, bow=seeker2 pitched lower",
+      "prompt": "short soft ember glow release with a gentle warm fizz tail, smooth organic pleasant one-shot, not harsh, no instrument",
+      "duration": 0.5
+    },
+    {
+      "id": "shoot_ricochet",
+      "category": "shoot",
+      "file": "shoot/ricochet.mp3",
+      "usedBy": "bow=ricochet1 at natural pitch, bow=ricochet2 pitched lower",
+      "prompt": "short punchy springy rebound with a warm bending tail, distinct bouncy one-shot, not harsh, no instrument",
+      "duration": 0.5
+    },
+    {
+      "id": "shoot_fire",
+      "category": "shoot",
+      "file": "shoot/fire.mp3",
+      "usedBy": "bow=fire1 pitched higher (lighter), bow=fire2 at natural pitch (file currently carries the old fire2 take — regen replaces it)",
+      "prompt": "warm soft flame whoosh with a gentle crackling glow tail, pleasant organic abstract one-shot, not harsh",
+      "duration": 0.6
+    },
+
+    {
+      "id": "impact_basic",
+      "category": "impact",
+      "file": "impact/basic.mp3",
+      "usedBy": "quiver=basic — plain arrow hits an enemy",
+      "prompt": "very short clean soft abstract thud, impact, dry, no reverb tail, one-shot",
+      "duration": 0.5
+    },
+    {
+      "id": "impact_explosive",
+      "category": "impact",
+      "file": "impact/explosive.mp3",
+      "usedBy": "quiver=explosive|explosive2 — arrow detonates on hit",
+      "prompt": "short tonal boom pop with a clear bright crack attack and a warm round low body, distinct punchy concussive one-shot, loud present, not harsh",
+      "duration": 0.6
+    },
+    {
+      "id": "impact_piercing",
+      "category": "impact",
+      "file": "impact/piercing.mp3",
+      "usedBy": "quiver=piercing|piercing2 — arrow passes through multiple",
+      "prompt": "very short soft airy sigh with a thin smooth body and no attack, subtle pass-through, unobtrusive pleasant one-shot",
+      "duration": 0.5
+    },
+    {
+      "id": "impact_blazing",
+      "category": "impact",
+      "file": "impact/blazing.mp3",
+      "usedBy": "quiver=blazing|blazing2 — arrow drops fire trail on hit. FILE CURRENTLY CARRIES THE OLD IMPACT_EXPLOSIVE TAKE — regenerating from the prompt below will replace it with a fresh blazing-focused sound.",
+      "prompt": "short crackly warm ember-burst impact with brief flame flash, abstract, one-shot",
+      "duration": 0.6
+    },
+
+    {
+      "id": "item_shockwave",
+      "category": "item",
+      "file": "item/shockwave.mp3",
+      "usedBy": "item=ring — fires shockwave when player takes damage",
+      "prompt": "short resonant bass pulse expanding outward, sci-fi forcefield release, satisfying thud with airy shimmer, one-shot",
+      "duration": 0.7
+    },
+    {
+      "id": "item_shield_absorb",
+      "category": "item",
+      "file": "item/shield_absorb.mp3",
+      "usedBy": "item=shield — shield absorbs an incoming hit",
+      "prompt": "short glassy shimmer crack, sci-fi shield deflect, crystalline bright, dry one-shot",
+      "duration": 0.6
+    },
+    {
+      "id": "item_shield_ready",
+      "category": "item",
+      "file": "item/shield_ready.mp3",
+      "usedBy": "item=shield — shield has finished regenerating and is back up",
+      "prompt": "short warm glassy rising chime, sci-fi shield powering up, reassuring, one-shot",
+      "duration": 0.8
+    },
+
+    {
+      "id": "player_damage",
+      "category": "player",
+      "file": "player/damage.mp3",
+      "usedBy": "player takes damage (no shield absorb)",
+      "prompt": "short muted glitchy low distortion hit, abstract player hurt warning, dry, one-shot",
+      "duration": 0.5
+    },
+
+    {
+      "id": "enemy_death",
+      "category": "enemy",
+      "file": "enemy/death.mp3",
+      "usedBy": "any enemy is killed (shared sound for all kinds for now)",
+      "prompt": "very short soft puff pop with tiny digital fizzle, abstract creature vanish, dry one-shot",
+      "duration": 0.5
+    },
+    {
+      "id": "charger_launch",
+      "category": "enemy",
+      "file": "enemy/charger_launch.mp3",
+      "usedBy": "charger finishes its telegraph and lunges at the player",
+      "prompt": "aggressive short sci-fi growl surge, menacing low-mid whoosh with a tight attack, enemy lunge telegraph, dry one-shot",
+      "duration": 0.6
+    },
+
+    {
+      "id": "ui_level_up",
+      "category": "ui",
+      "file": "ui/level_up.mp3",
+      "usedBy": "player level-up triggers the upgrade-card overlay",
+      "prompt": "warm celebratory glow release with a gentle rising shimmer and a satisfying pleasant tail, rewarding mellow magical abstract one-shot, smooth soft attack, not harsh, not aggressive, no instrument",
+      "duration": 1.4
+    },
+    {
+      "id": "ui_card_click",
+      "category": "ui",
+      "file": "ui/card_click.mp3",
+      "usedBy": "player clicks an upgrade card on level-up",
+      "prompt": "very short crisp soft UI click with tiny warm pad tail, satisfying confirm, one-shot",
+      "duration": 0.5
+    },
+    {
+      "id": "ui_empty_draw",
+      "category": "ui",
+      "file": "ui/empty_draw.mp3",
+      "usedBy": "player tries to draw the bow with zero arrows in quiver",
+      "prompt": "short hollow dry click like an empty magazine, light metallic tap with a subtle tonal body, slightly abstract no-ammo feedback, distinct one-shot, not harsh",
+      "duration": 0.5
+    },
+
+    {
+      "id": "quiver_reload",
+      "category": "quiver",
+      "file": "quiver/reload.mp3",
+      "usedBy": "every reloaded arrow — pitch rises from 0.85x (1st arrow) to 1.25x (the arrow that fills the quiver), scaled to whatever capacity is active",
+      "prompt": "short mechanical magazine load click with a warm metallic snap and a subtle tonal body, slightly abstract satisfying one-shot, not harsh",
+      "duration": 0.5
+    }
+  ]
+}

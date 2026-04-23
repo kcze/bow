@@ -1,0 +1,17 @@
+{
+  "$comment": "Music tracks generated via the ElevenLabs Music API (/v1/music). Separate pipeline from sfx — different endpoint, different pricing tier, different file paths. Edit prompts here and run `npm run gen:music` to (re)generate missing files. The music player loops whichever track the game calls for and exposes a volume slider in the loadout picker. See README.md for details.",
+  "defaults": {
+    "outputFormat": "mp3_44100_128",
+    "modelId": "music_v1"
+  },
+  "tracks": [
+    {
+      "id": "gameplay_late",
+      "file": "music/gameplay_late.mp3",
+      "usedBy": "the only gameplay loop — plays from the start of every run",
+      "prompt": "intense dark instrumental electronic combat loop with a driving low synth bass, tense minor-key melodic motif, relentless rhythmic pulse with tight percussive hits and snappy hi-hats, urgent evolving synth textures and subtle distorted stabs, adrenaline-focused for a rogue-lite arena bow shooter facing waves of enemies, seamless loopable track, matching beginning and end for clean loop point, no intro, no outro, no fade-in, no fade-out, sustained driving energy throughout, strictly instrumental, no vocals, no voices, no singing, no vocal samples, no human voice at all",
+      "durationMs": 60000,
+      "bpm": 130
+    }
+  ]
+}
