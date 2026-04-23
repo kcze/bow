@@ -8,6 +8,17 @@ import { DbConnection } from './module_bindings';
 export const MODULE_NAME = 'bow-leaderboard-jngim';
 export const MODULE_URI = 'wss://maincloud.spacetimedb.com';
 
+// Only the canonical deployment writes to the shared leaderboard. Forks
+// (whether hosted on someone else's github.io path, a custom domain, or
+// run locally via `npm run dev`) can read the board but won't submit
+// scores into it. This is defense-in-depth — the real guardrails are the
+// server's validation caps + rate limit — but it keeps the default
+// behavior "don't pollute the canonical board unless you're on the
+// canonical host."
+const SUBMIT_ALLOWED_HOSTS = new Set(['kcze.github.io']);
+export const canSubmitScores: boolean =
+  typeof window !== 'undefined' && SUBMIT_ALLOWED_HOSTS.has(window.location.hostname);
+
 // Anonymous identity is persisted across sessions so a returning player's
 // overwrite-if-better rule actually overwrites their own prior row.
 const TOKEN_LS = 'bow.spacetime.token';

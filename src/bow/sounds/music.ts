@@ -13,7 +13,9 @@
 import manifest from './music.json';
 
 const URL_BY_ID: Record<string, string> = Object.fromEntries(
-  (manifest.tracks as Array<{ id: string; file: string }>).map(t => [t.id, `/sfx/${t.file}`]),
+  // BASE_URL is `/` in dev and the Vite `base` (e.g. `/bow/`) in production,
+  // so absolute paths correctly resolve under GitHub Pages' subpath.
+  (manifest.tracks as Array<{ id: string; file: string }>).map(t => [t.id, `${import.meta.env.BASE_URL}sfx/${t.file}`]),
 );
 const SESSION_ID = Date.now().toString(36);
 const LS_KEY = 'fire.musicVolume';
