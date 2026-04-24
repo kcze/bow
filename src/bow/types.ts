@@ -43,11 +43,15 @@ export interface BowRenderStyle {
 export interface BowStatsMod {
   rangeMult: number;
   drawRateMult: number;
-  perArrowDamageMult: number;
+  // Integer damage per arrow for this bow, before the +1 Damage mod. Final
+  // arrow damage = arrowDamage + stats.damageBonus.
+  arrowDamage: number;
 }
 
 export interface Stats {
-  damageMult: number;
+  // Flat damage added to every arrow's damage (0–6 from the +2 Damage mod
+  // stacking up to 3 times).
+  damageBonus: number;
   speedMult: number;
   drawRateMult: number;
   reloadRateMult: number;
@@ -56,7 +60,7 @@ export interface Stats {
 }
 export function baseStats(): Stats {
   return {
-    damageMult: 1, speedMult: 1, drawRateMult: 1, reloadRateMult: 1,
+    damageBonus: 0, speedMult: 1, drawRateMult: 1, reloadRateMult: 1,
     arrowSpeedMult: 1, quiverBonus: 0,
   };
 }
@@ -167,11 +171,10 @@ export interface FirePatch {
   radius: number;
   duration: number;
   life: number;
-  dps: number;
+  hitDamage: number;
+  hitEnemies: Set<Enemy>;
   emberAccum: number;
   pulsePhase: number;
-  tickDamageAccum: number;
-  damageBudget: number;
 }
 
 export interface RingEffect {

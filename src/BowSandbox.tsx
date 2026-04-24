@@ -31,7 +31,7 @@ import {
   SPAWNLING_AURA_TINT, SPAWNLING_FILL_MID, SPAWNLING_STROKE, SPAWNLING_EMBER,
   CHARGER_RADIUS, CHARGER_HP, CHARGER_PURSUE_SPEED, CHARGER_DETECT_RANGE,
   CHARGER_TELEGRAPH_S, CHARGER_LAUNCH_SPEED, CHARGER_LAUNCH_DRAG,
-  CHARGER_MIN_LAUNCH_SPEED, CHARGER_MAX_LAUNCH_T, CHARGER_FREEZE_S,
+  CHARGER_MIN_LAUNCH_SPEED, CHARGER_MAX_LAUNCH_T,
   CHARGER_AURA_TINT, CHARGER_FILL_DARK, CHARGER_FILL_MID,
   CHARGER_FILL_HIGH, CHARGER_STROKE, CHARGER_EMBER,
   STALKER_RADIUS, STALKER_SPEED, STALKER_TURN_RATE, STALKER_HP,
@@ -40,16 +40,16 @@ import {
   ARENA_RADIUS, ARENA_COLOR,
   WAVE_DURATION, WAVE_PAUSE_S, WAVE_BASE_COUNT,
   MAX_LEVEL,
-  EXPLOSION_RADIUS, EXPLOSION_DAMAGE_MULT, EXPLOSION_MIN_FALLOFF,
+  EXPLOSION_RADIUS,
   BLAZING_PATCH_SPACING, BLAZING_PATCH_RADIUS,
-  BLAZING_PATCH_DURATION_1, BLAZING_PATCH_DURATION_2, BLAZING_PATCH_DURATION_3, BLAZING_PATCH_DPS,
-  BLAZING_PATCH_DAMAGE_CAP,
+  BLAZING_PATCH_DURATION_1, BLAZING_PATCH_DURATION_2, BLAZING_PATCH_DURATION_3,
+  BLAZING_PATCH_HIT_DAMAGE,
   SHIELD_REGEN_BASE, SHIELD_REGEN_PER_POWER,
   SHOCKWAVE_EXPAND_SPEED, SHOCKWAVE_MAX_RADIUS_BASE,
   SHOCKWAVE_MAX_RADIUS_PER_POWER, SHOCKWAVE_DAMAGE_BASE,
   SHOCKWAVE_DAMAGE_PER_POWER,
   EMBER_TRAIL_PATCH_DURATION_BASE, EMBER_TRAIL_PATCH_DURATION_PER_POWER,
-  EMBER_TRAIL_PATCH_RADIUS, EMBER_TRAIL_PATCH_DPS, EMBER_TRAIL_PATCH_DAMAGE_CAP,
+  EMBER_TRAIL_PATCH_RADIUS, EMBER_TRAIL_PATCH_HIT_DAMAGE,
   SPLIT2_SPREAD_DEG, SPLIT3_SPREAD_DEG, SPLIT5_SPREAD_DEG,
 } from './bow/constants';
 import type {
@@ -62,7 +62,11 @@ import type {
 } from './bow/types';
 import { baseStats } from './bow/types';
 import { PALETTES, lerpColor } from './bow/palettes';
-import { BOW_RENDER, BOW_STATS, UPGRADES, SHATTER_SHARD_COUNT, SHATTER_SHARD_DAMAGE_MULT } from './bow/upgrades';
+import {
+  BOW_RENDER, BOW_STATS, UPGRADES, SHATTER_SHARD_COUNT, SHATTER_SHARD_DAMAGE,
+  BOW_TREE_OF, BOW_TIER_OF, BOW_UPGRADE_BY_TIER,
+  QUIVER_TREE_OF, QUIVER_TIER_OF, QUIVER_UPGRADE_BY_TIER,
+} from './bow/upgrades';
 import {
   lerp, fmtMMSS, getGlowTexture, getCircleTexture,
   weightedPickN, xpToReachLevel, levelForXp,
@@ -310,7 +314,6 @@ export default function BowSandbox() {
         awaitingStart: true,
         paused: true, levelUpPending: false,
         levelUpChoices: [] as Upgrade[],
-        freezeRemaining: 0,
         stats: baseStats(),
         statLevels: {} as Record<string, number>,
         loadout: { bow: 'basic', quiver: 'basic', item: 'none' as ItemKind } as Loadout,
@@ -330,7 +333,9 @@ export default function BowSandbox() {
       function playerSpeed() { return PLAYER_SPEED * state.stats.speedMult; }
       function drawRate() { return DRAW_RATE * state.stats.drawRateMult * BOW_STATS[state.loadout.bow].drawRateMult; }
       function reloadSeconds() { return ARROW_RELOAD_S / state.stats.reloadRateMult; }
-      function arrowDamage() { return ARROW_DAMAGE * state.stats.damageMult; }
+      function arrowDamageFor(bow: BowKind): number {
+        return BOW_STATS[bow].arrowDamage + state.stats.damageBonus;
+      }
       function arrowSpeedFromRange(range: number) { return (range / FLIGHT_TIME) * state.stats.arrowSpeedMult; }
 
       const player = { x: 0, y: 0 };
@@ -861,22 +866,23 @@ export default function BowSandbox() {
 
       // Weighted pool of enemy kinds for a given wave number.
       function wavePool(w: number): Array<{ kind: EnemyKind; weight: number }> {
+        // Stalkers are the baseline chase pressure — a low weight from wave 1
+        // so every run has "something hunting me" tension without the early
+        // waves turning into a stalker stampede.
         const pool: Array<{ kind: EnemyKind; weight: number }> = [
-          { kind: 'grunt', weight: 8 },
+          { kind: 'grunt',   weight: 8 },
+          { kind: 'stalker', weight: w >= 7 ? 4 : 2 },
         ];
         if (w >= 3)  pool.push({ kind: 'weaver',      weight: 5 });
         if (w >= 4)  pool.push({ kind: 'sapper',      weight: 3 });
         if (w >= 5)  pool.push({ kind: 'charger',     weight: 3 });
         if (w >= 6)  pool.push({ kind: 'broodmother', weight: 2 });
-        if (w >= 7)  pool.push({ kind: 'stalker',     weight: 3 });
         if (w >= 8)  pool.push({ kind: 'pulser',      weight: 3 });
         return pool;
       }
       function spawnRateFor(w: number) {
-        // enemies per second — longer ramp + higher peak. Old cap was
-        // 3.62/s at wave 40; new cap is ~5.5/s at wave 60, so mid-to-late
-        // waves stay dangerous for the buffed bows.
-        return 0.5 + 0.085 * Math.min(60, w - 1);
+        // Linear ramp: 1.0/s at wave 1 → 6.0/s at wave 60, then plateau.
+        return Math.min(6.0, 1.0 + (w - 1) * (5 / 59));
       }
       function pickWaveKind(w: number): EnemyKind {
         const pool = wavePool(w);
@@ -930,10 +936,12 @@ export default function BowSandbox() {
                                     : quiver === 'blazing2' ? BLAZING_PATCH_DURATION_2
                                     : quiver === 'blazing3' ? BLAZING_PATCH_DURATION_3
                                     : 0;
-        const mainDamage = arrowDamage() * bowMod.perArrowDamageMult;
+        const mainDamage = arrowDamageFor(bow);
         const shatterShards = SHATTER_SHARD_COUNT[bow] ?? 0;
+        // Shards scale with the +2 Damage mod too — every arrow (including
+        // shards) gets the bonus.
         const shatterShardDamage = shatterShards > 0
-          ? arrowDamage() * (SHATTER_SHARD_DAMAGE_MULT[bow] ?? 0)
+          ? (SHATTER_SHARD_DAMAGE[bow] ?? 0) + state.stats.damageBonus
           : 0;
         arrows.push({
           gfx, x: fromX, y: fromY,
@@ -1069,11 +1077,10 @@ export default function BowSandbox() {
           gfx, x, y,
           radius: EMBER_TRAIL_PATCH_RADIUS,
           duration, life: 0,
-          dps: EMBER_TRAIL_PATCH_DPS,
+          hitDamage: EMBER_TRAIL_PATCH_HIT_DAMAGE,
+          hitEnemies: new Set<Enemy>(),
           emberAccum: 0,
           pulsePhase: Math.random() * Math.PI * 2,
-          tickDamageAccum: 0,
-          damageBudget: EMBER_TRAIL_PATCH_DAMAGE_CAP,
         });
       }
 
@@ -1084,11 +1091,10 @@ export default function BowSandbox() {
           gfx, x, y,
           radius: BLAZING_PATCH_RADIUS,
           duration, life: 0,
-          dps: BLAZING_PATCH_DPS,
+          hitDamage: BLAZING_PATCH_HIT_DAMAGE,
+          hitEnemies: new Set<Enemy>(),
           emberAccum: 0,
           pulsePhase: Math.random() * Math.PI * 2,
-          tickDamageAccum: 0,
-          damageBudget: BLAZING_PATCH_DAMAGE_CAP,
         });
       }
 
@@ -1115,7 +1121,9 @@ export default function BowSandbox() {
 
       // Spawn a child arrow at the pierce hit point that bounces to a nearby
       // un-hit enemy. Inherits hitEnemies so it won't double-hit anything the
-      // parent already hit; has its own bounce count from the parent's bow.
+      // parent already hit. The spawn *itself* counts as the first bounce, so
+      // the child starts with parent.bounces - 1 (a ricochet1 child hits one
+      // target and dies; without this decrement it'd bounce a second time).
       function spawnRicochetChild(parent: Arrow, from: Enemy | null) {
         const target = findBounceTarget(parent.x, parent.y, parent.hitEnemies, from);
         if (!target) return;
@@ -1138,7 +1146,7 @@ export default function BowSandbox() {
           shaftColor: parent.shaftColor,
           trailColor: parent.trailColor,
           coreSparkColor: parent.coreSparkColor,
-          bounces: parent.bounces,
+          bounces: Math.max(0, parent.bounces - 1),
           blazing: false, blazingPatchDuration: 0, blazingAccum: 0,
           childArrowsSpawned: 0,
           shatterShards: 0, shatterShardDamage: 0,
@@ -1248,17 +1256,19 @@ export default function BowSandbox() {
         // XP is now granted per damage dealt (not on kill).
       }
 
-      function applyExplosion(x: number, y: number, baseDmg: number, radius: number) {
+      function applyExplosion(x: number, y: number, _baseDmg: number, radius: number) {
         emitExplosion(x, y, radius);
         spawnHitRing(x, y, 0xffaa33);
         shake += 7;
+        // Distance-banded damage: 3 at the core, 2 in the middle third, 1 at
+        // the edge — capped at 3, ignores arrow damage. Ceil ensures even a
+        // hair inside the outer radius deals at least 1.
         for (const e of enemies) {
           if (!e.alive) continue;
           const dx = e.x - x, dy = e.y - y;
-          const d = Math.hypot(dx, dy);
-          if (d < radius) {
-            const falloff = Math.max(EXPLOSION_MIN_FALLOFF, 1 - d / radius);
-            const dmg = baseDmg * EXPLOSION_DAMAGE_MULT * falloff;
+          const dsq = dx * dx + dy * dy;
+          if (dsq < radius * radius) {
+            const dmg = Math.max(1, Math.ceil(3 * (1 - Math.sqrt(dsq) / radius)));
             const eff = Math.max(0, Math.min(dmg, e.hp));
             e.hp -= dmg;
             e.pop = Math.max(e.pop, 0.8);
@@ -1270,9 +1280,63 @@ export default function BowSandbox() {
       }
 
       // ── Upgrades / levelling ──────────────────────────────────────────────
+      // Returns the upgrade id to actually offer for `u` given the player's
+      // current bow/quiver tier. For cross-tree bow/quiver upgrades, swaps the
+      // tree-entry (tier 1) id for the same-tier id in that tree so switching
+      // mid-run isn't a downgrade (e.g. split3 player → ricochet2, not ricochet1).
+      // Returns null if there's no valid offer (same-tree downgrade, etc.).
+      function resolveUpgradeId(u: Upgrade): string | null {
+        if (u.kind === 'bow') {
+          const curTree = BOW_TREE_OF[state.loadout.bow];
+          const curTier = BOW_TIER_OF[state.loadout.bow];
+          // Find which tree this upgrade belongs to.
+          let uTree: keyof typeof BOW_UPGRADE_BY_TIER | null = null;
+          for (const tree of ['split', 'ricochet', 'shatter'] as const) {
+            for (const tier of [1, 2, 3] as const) {
+              if (BOW_UPGRADE_BY_TIER[tree][tier] === u.id) { uTree = tree; break; }
+            }
+            if (uTree) break;
+          }
+          if (!uTree) return u.id; // not a tier'd bow upgrade, leave alone
+          if (curTree === uTree) return u.id; // same-tree — normal continuation
+          // Cross-tree: offer the same tier the player is already at. tier 0
+          // (basic) and tier 1 both map to tier 1 — at tier 1 cross-tree is a
+          // lateral swap, not a downgrade.
+          const targetTier = (Math.max(1, curTier) as 1 | 2 | 3);
+          return BOW_UPGRADE_BY_TIER[uTree][targetTier];
+        }
+        if (u.kind === 'quiver') {
+          const curTree = QUIVER_TREE_OF[state.loadout.quiver];
+          const curTier = QUIVER_TIER_OF[state.loadout.quiver];
+          let uTree: keyof typeof QUIVER_UPGRADE_BY_TIER | null = null;
+          for (const tree of ['explosive', 'piercing', 'blazing'] as const) {
+            for (const tier of [1, 2, 3] as const) {
+              if (QUIVER_UPGRADE_BY_TIER[tree][tier] === u.id) { uTree = tree; break; }
+            }
+            if (uTree) break;
+          }
+          if (!uTree) return u.id;
+          if (curTree === uTree) return u.id;
+          const targetTier = (Math.max(1, curTier) as 1 | 2 | 3);
+          return QUIVER_UPGRADE_BY_TIER[uTree][targetTier];
+        }
+        return u.id;
+      }
+
       function isUpgradeAvailable(u: Upgrade): boolean {
-        if (u.needBow && state.loadout.bow !== u.needBow) return false;
-        if (u.needQuiver && state.loadout.quiver !== u.needQuiver) return false;
+        // For cross-tree bow/quiver upgrades we bypass needBow/needQuiver —
+        // offering ricochet2 to a split3 player skips over ricochet1. The
+        // availability decision flows through the *resolved* id's presence in
+        // the pool; the entry upgrade (tier 1) is what triggers this branch.
+        const crossTree = (u.kind === 'bow' && BOW_TREE_OF[state.loadout.bow] !== null
+                            && u.id !== 'bow-basic'
+                            && resolveUpgradeId(u) !== u.id)
+                        || (u.kind === 'quiver' && QUIVER_TREE_OF[state.loadout.quiver] !== null
+                            && resolveUpgradeId(u) !== u.id);
+        if (!crossTree) {
+          if (u.needBow && state.loadout.bow !== u.needBow) return false;
+          if (u.needQuiver && state.loadout.quiver !== u.needQuiver) return false;
+        }
         if (u.blockIfBow) {
           const blocks = Array.isArray(u.blockIfBow) ? u.blockIfBow : [u.blockIfBow];
           if (blocks.includes(state.loadout.bow)) return false;
@@ -1295,19 +1359,29 @@ export default function BowSandbox() {
       function rollUpgrades(n: number): Upgrade[] {
         const avail = UPGRADES.filter(isUpgradeAvailable);
         const heal = UPGRADES.find(u => u.id === 'heal-full');
-        // Slots 1..n-1 roll from every available upgrade. The last slot is
-        // mod-only so late-game players always get at least one useful stat
-        // bump instead of staring at three "you already own this" picks.
         const generalPool = avail;
         const modPool = avail.filter(u => u.kind === 'mod');
         const picks: Upgrade[] = [];
         const usedIds = new Set<string>();
 
+        // After rolling a tier-1 tree-entry (bow-ricochet1, etc.) for a
+        // tier-2+ player, swap in the matching-tier variant so the card shows
+        // (and applies) ricochet2 instead of ricochet1.
+        const resolvePick = (u: Upgrade): Upgrade => {
+          const resolvedId = resolveUpgradeId(u);
+          if (!resolvedId || resolvedId === u.id) return u;
+          return UPGRADES.find(x => x.id === resolvedId) ?? u;
+        };
+
         const addFromPool = (pool: Upgrade[]) => {
-          const fresh = pool.filter(u => !usedIds.has(u.id));
+          // Dedupe on both the entry id AND the resolved id so a single slot
+          // can't show bow-ricochet1-entry + bow-ricochet2 as two picks.
+          const fresh = pool.filter(u => {
+            if (usedIds.has(u.id)) return false;
+            const r = resolveUpgradeId(u);
+            return !(r && usedIds.has(r));
+          });
           if (fresh.length === 0) {
-            // Fallback — nothing left in this category. Drop in Full Heal if
-            // it's not already offered.
             if (heal && !usedIds.has(heal.id)) {
               picks.push(heal);
               usedIds.add(heal.id);
@@ -1316,14 +1390,14 @@ export default function BowSandbox() {
           }
           const [one] = weightedPickN(fresh, 1);
           if (one) {
-            picks.push(one);
+            const resolved = resolvePick(one);
+            picks.push(resolved);
             usedIds.add(one.id);
+            usedIds.add(resolved.id);
           }
         };
 
-        // First n-1 picks: general pool (bow / quiver / item / mod).
         for (let i = 0; i < n - 1; i++) addFromPool(generalPool);
-        // Final pick: mod-only.
         if (n > 0) addFromPool(modPool);
 
         return picks;
@@ -1333,7 +1407,7 @@ export default function BowSandbox() {
           state.statLevels[u.id] = (state.statLevels[u.id] ?? 0) + 1;
         }
         switch (u.id) {
-          case 'dmg':       state.stats.damageMult *= 1.15; break;
+          case 'dmg':       state.stats.damageBonus += 2; break;
           case 'spd':       state.stats.speedMult *= 1.10; break;
           case 'draw':      state.stats.drawRateMult *= 1.10; break;
           case 'reload':    state.stats.reloadRateMult *= 1.20; break;
@@ -1426,7 +1500,6 @@ export default function BowSandbox() {
         state.awaitingStart = true;
         state.paused = true; state.levelUpPending = false;
         state.levelUpChoices = [];
-        state.freezeRemaining = 0;
         state.stats = baseStats();
         state.statLevels = {};
         state.loadout = { bow: 'basic', quiver: 'basic', item: 'none' };
@@ -1642,12 +1715,7 @@ export default function BowSandbox() {
           }
         }
         const updatesPaused = state.paused || state.dead;
-        let simDt = rawDt;
-        if (updatesPaused) simDt = 0;
-        else if (state.freezeRemaining > 0) {
-          state.freezeRemaining -= rawDt;
-          simDt = 0;
-        }
+        const simDt = updatesPaused ? 0 : rawDt;
 
         if (!updatesPaused && !state.dying) {
           const dx = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
@@ -2109,7 +2177,6 @@ export default function BowSandbox() {
                   e.chargeVx = e.chargeDirX * CHARGER_LAUNCH_SPEED;
                   e.chargeVy = e.chargeDirY * CHARGER_LAUNCH_SPEED;
                   emitChargerLaunchFlash(e);
-                  state.freezeRemaining = CHARGER_FREEZE_S;
                   shake += 1.5;
                   playSfx('charger_launch', { volume: 0.55 });
                 }
@@ -2406,27 +2473,20 @@ export default function BowSandbox() {
               firePatches.splice(i, 1);
               continue;
             }
-            // Damage enemies inside. Per-patch damageBudget caps the total a
-            // single patch can deal (so blazing can't instakill via many
-            // overlapping patches).
-            p.tickDamageAccum += simDt;
-            if (p.tickDamageAccum >= 0.12 && p.damageBudget > 0) {
-              const tickAmount = Math.min(p.damageBudget, p.dps * p.tickDamageAccum);
-              p.tickDamageAccum = 0;
-              for (const e of enemies) {
-                if (!e.alive) continue;
-                if (p.damageBudget <= 0) break;
-                const dx = e.x - p.x, dy = e.y - p.y;
-                const r = p.radius + e.radius;
-                if (dx * dx + dy * dy < r * r) {
-                  const applied = Math.min(tickAmount, p.damageBudget);
-                  const eff = Math.max(0, Math.min(applied, e.hp));
-                  e.hp -= applied;
-                  p.damageBudget -= applied;
-                  state.damageDealt += eff;
-                  grantXp(eff);
-                  if (e.hp <= 0) killEnemy(e);
-                }
+            // One hit per enemy per patch — same rule as arrows. Each enemy
+            // that enters a patch takes hitDamage once and is remembered in
+            // p.hitEnemies so subsequent frames won't re-tick it.
+            for (const e of enemies) {
+              if (!e.alive || p.hitEnemies.has(e)) continue;
+              const dx = e.x - p.x, dy = e.y - p.y;
+              const r = p.radius + e.radius;
+              if (dx * dx + dy * dy < r * r) {
+                const eff = Math.max(0, Math.min(p.hitDamage, e.hp));
+                e.hp -= p.hitDamage;
+                p.hitEnemies.add(e);
+                state.damageDealt += eff;
+                grantXp(eff);
+                if (e.hp <= 0) killEnemy(e);
               }
             }
             // Flame particles

@@ -614,7 +614,7 @@ export function DebugPanel({ stats, loadout, onClose }: {
   stats: Stats; loadout: Loadout; onClose: () => void;
 }) {
   const statRows: Array<[string, string]> = [
-    ['damage mult',      stats.damageMult.toFixed(2) + 'x'],
+    ['damage bonus',     '+' + stats.damageBonus],
     ['speed mult',       stats.speedMult.toFixed(2) + 'x'],
     ['draw rate mult',   stats.drawRateMult.toFixed(2) + 'x'],
     ['reload mult',      stats.reloadRateMult.toFixed(2) + 'x'],

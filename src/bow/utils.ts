@@ -66,10 +66,13 @@ export function weightedPickN<T extends { weight: number }>(pool: T[], n: number
 }
 
 // ─── XP curve ─────────────────────────────────────────────────────────────────
-export function xpToReachLevel(level: number) { return 4 * level * (level - 1); }
+// Quadratic: xpToReach(L) = 5 * L * (L - 1). Each level costs 25% more XP
+// than the prior k=4 tuning, so early leveling slows after the integer-damage
+// rework (bigger hits → more XP/hit) started producing levels too quickly.
+export function xpToReachLevel(level: number) { return 5 * level * (level - 1); }
 export function levelForXp(xp: number) {
-  // Invert 4*L*(L-1) <= xp → L <= (1 + sqrt(1 + xp)) / 2
-  const L = Math.floor((1 + Math.sqrt(1 + xp)) / 2);
+  // Invert 5*L*(L-1) <= xp → L <= (1 + sqrt(1 + 0.8 * xp)) / 2
+  const L = Math.floor((1 + Math.sqrt(1 + 0.8 * xp)) / 2);
   return Math.max(1, L);
 }
 
