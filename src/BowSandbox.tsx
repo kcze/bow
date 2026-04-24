@@ -2567,19 +2567,17 @@ export default function BowSandbox() {
   // the link between the hovered card and existing progress visible. Empty
   // when nothing is hovered — highlights are hover-only, not always-on.
   // Persist a score row the moment the game-over overlay appears. Resetting
-  // (awaitingStart flips back on) clears the "just-scored" highlight so a
-  // fresh run starts clean.
-  // Guards against double-submission (StrictMode remounts or duplicate
-  // dying→dead transitions if the ticker ever loops).
-  const submittedRunRef = useRef(false);
-
   // Install the ticker callback that finalizes a run. Kept as an effect
   // so it closes over the latest playerName / submit reducer — each run
-  // uses whatever name was set at the start screen.
+  // uses whatever name was set at the start screen. No StrictMode guard
+  // needed: the ticker invokes this callback exactly once, from the
+  // dying→dead branch that fires only when state.dying was true and
+  // deathRevealTimer just expired. Guard flags tied to hud.awaitingStart
+  // break on the "Again" flow because resetGame+startGame run in the
+  // same tick, so hud.awaitingStart never actually transitions through
+  // true and the guard never clears.
   useEffect(() => {
     finalizeRunRef.current = (run) => {
-      if (submittedRunRef.current) return;
-      submittedRunRef.current = true;
       const ts = Date.now();
       const damage = Math.round(run.damage);
       const timeSeconds = Math.max(1, Math.round(run.timeSurvived));
@@ -2610,13 +2608,13 @@ export default function BowSandbox() {
     };
   }, [playerName, submitScoreOnline]);
 
-  // Reset the submitted guard + highlighted row when a fresh run begins.
+  // Clear the "just-scored" highlight whenever a new run starts (hud.dead
+  // falling edge). Using this signal instead of hud.awaitingStart because
+  // the Again button resets+starts within one tick, so awaitingStart
+  // never transitions through the React hud.
   useEffect(() => {
-    if (hud.awaitingStart) {
-      setLastScoreTs(null);
-      submittedRunRef.current = false;
-    }
-  }, [hud.awaitingStart]);
+    if (!hud.dead) setLastScoreTs(null);
+  }, [hud.dead]);
 
   const levelUpHighlightFamilies = useMemo(() => {
     const set = new Set<string>();
