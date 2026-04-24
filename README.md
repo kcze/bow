@@ -4,7 +4,7 @@ A top-down arena bow shooter. Draw, aim, release. Survive waves of enemies, pick
 
 Built for [Vibe Jam 2026](https://vibej.am/2026/) with **React + Vite + PixiJS v8**. Sound effects + music are generated via the ElevenLabs API.
 
-Play: https://kcze.github.io/bow/
+Play: https://bow.kcze.dev
 
 ## Run locally
 
@@ -60,4 +60,4 @@ spacetime publish bow-leaderboard-jngim --server maincloud -y
 cd .. && spacetime generate --lang typescript --out-dir src/module_bindings --module-path spacetimedb/spacetimedb
 ```
 
-Forks that aren't running on `kcze.github.io` can read the leaderboard but won't submit scores — see `src/spacetime.ts`.
+Forks that aren't running on `bow.kcze.dev` can read the leaderboard but won't submit scores — see `src/spacetime.ts`.

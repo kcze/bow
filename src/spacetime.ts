@@ -15,7 +15,7 @@ export const MODULE_URI = 'wss://maincloud.spacetimedb.com';
 // server's validation caps + rate limit — but it keeps the default
 // behavior "don't pollute the canonical board unless you're on the
 // canonical host."
-const SUBMIT_ALLOWED_HOSTS = new Set(['kcze.github.io']);
+const SUBMIT_ALLOWED_HOSTS = new Set(['bow.kcze.dev']);
 export const canSubmitScores: boolean =
   typeof window !== 'undefined' && SUBMIT_ALLOWED_HOSTS.has(window.location.hostname);
 

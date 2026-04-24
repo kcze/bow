@@ -14,8 +14,6 @@ import manifest from './manifest.json';
 type PlayOpts = { pitch?: number; volume?: number };
 
 const URL_BY_ID: Record<string, string> = Object.fromEntries(
-  // BASE_URL is `/` in dev and the Vite `base` (e.g. `/bow/`) in production,
-  // so absolute paths correctly resolve under GitHub Pages' subpath.
   (manifest.sounds as Array<{ id: string; file: string }>).map(s => [s.id, `${import.meta.env.BASE_URL}sfx/${s.file}`]),
 );
 
