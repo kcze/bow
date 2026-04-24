@@ -182,6 +182,12 @@ export const EXPLOSION_RADIUS = 75;
 // ─── Blazing Chevron — fire trail along the flight path ──────────────────────
 export const BLAZING_PATCH_SPACING = 38;
 export const BLAZING_PATCH_RADIUS = 28;
+// How far behind the arrow's tip each patch spawns. Must be >= patch radius
+// so the patch can't reach an enemy that the arrow hasn't yet reached — if a
+// patch ahead of the arrow pre-kills the target, the arrow's direct-hit
+// check gets skipped and effects tied to that hit (shatter shards) never
+// fire. Trailing behind the arrow head lets the arrow land first.
+export const BLAZING_PATCH_TRAIL_OFFSET = 44;
 export const BLAZING_PATCH_DURATION_1 = 1.0;
 export const BLAZING_PATCH_DURATION_2 = 1.5;
 export const BLAZING_PATCH_DURATION_3 = 2.5;

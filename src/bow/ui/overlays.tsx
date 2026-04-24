@@ -79,13 +79,14 @@ function StatModIcon({ id, size, color }: { id: string; size: number; color: str
     );
   }
   if (id === 'draw') {
-    // Symbolic bow built from two UP-pointing triangles — one broader at the
-    // bottom (the bow body) and a smaller one above (the nocked arrow
-    // tip / top limb).
+    // Two identical UP-pointing triangles stacked vertically — mirrors the
+    // "double chevron" motif used for the `spd` (move speed) icon, but
+    // rotated 90° so it reads as vertical "draw" motion instead of lateral
+    // motion.
     return (
       <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-        <polygon points={`${cx},${s * 0.46} ${s * 0.14},${s * 0.88} ${s * 0.86},${s * 0.88}`} {...solid} />
-        <polygon points={`${cx},${s * 0.10} ${s * 0.30},${s * 0.48} ${s * 0.70},${s * 0.48}`} {...solid} />
+        <polygon points={`${cx},${s * 0.10} ${s * 0.20},${s * 0.46} ${s * 0.80},${s * 0.46}`} {...solid} />
+        <polygon points={`${cx},${s * 0.52} ${s * 0.20},${s * 0.88} ${s * 0.80},${s * 0.88}`} {...solid} />
       </svg>
     );
   }
@@ -156,18 +157,12 @@ function StatModIcon({ id, size, color }: { id: string; size: number; color: str
     );
   }
   if (id === 'hp') {
-    // Two plus icons of different sizes, offset vertically, so they feel
-    // like "more lives added" rather than "one + one".
-    const makePlus = (pcx: number, pcy: number, arm: number, key: string) => (
-      <g key={key}>
-        <line x1={pcx - arm} y1={pcy} x2={pcx + arm} y2={pcy} {...stroke} />
-        <line x1={pcx} y1={pcy - arm} x2={pcx} y2={pcy + arm} {...stroke} />
-      </g>
-    );
+    // One solid cross filling the viewBox — reads as a single "HP bar" /
+    // full health block. A new max-HP level = a whole new health chunk.
     return (
       <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-        {makePlus(s * 0.34, s * 0.56, s * 0.16, 'big')}
-        {makePlus(s * 0.70, s * 0.34, s * 0.10, 'small')}
+        <rect x={s * 0.42} y={s * 0.18} width={s * 0.16} height={s * 0.64} fill={color} />
+        <rect x={s * 0.18} y={s * 0.42} width={s * 0.64} height={s * 0.16} fill={color} />
       </svg>
     );
   }
@@ -181,10 +176,18 @@ function StatModIcon({ id, size, color }: { id: string; size: number; color: str
     );
   }
   if (id === 'heal-full') {
+    // Two plus icons of different sizes, offset — reads as "pluses going in"
+    // (topping up health) rather than "one more block of max HP".
+    const makePlus = (pcx: number, pcy: number, arm: number, key: string) => (
+      <g key={key}>
+        <line x1={pcx - arm} y1={pcy} x2={pcx + arm} y2={pcy} {...stroke} />
+        <line x1={pcx} y1={pcy - arm} x2={pcx} y2={pcy + arm} {...stroke} />
+      </g>
+    );
     return (
       <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
-        <rect x={s * 0.42} y={s * 0.18} width={s * 0.16} height={s * 0.64} fill={color} />
-        <rect x={s * 0.18} y={s * 0.42} width={s * 0.64} height={s * 0.16} fill={color} />
+        {makePlus(s * 0.34, s * 0.56, s * 0.16, 'big')}
+        {makePlus(s * 0.70, s * 0.34, s * 0.10, 'small')}
       </svg>
     );
   }

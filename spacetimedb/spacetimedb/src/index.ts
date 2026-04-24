@@ -9,11 +9,15 @@ export default spacetimedb;
 // silently discarded — only absurdly large values are stopped.
 const MAX_TIME_SECONDS = 14_400;       // 4 hours
 const MAX_LEVEL = 30;                  // matches client MAX_LEVEL
-// Tight per-second caps: comfortable headroom above realistic play, but
-// low enough that 4h of cheesing still can't crown a cheater with a
-// clearly absurd number.
-const MAX_KILLS_PER_SECOND = 5;
-const MAX_DAMAGE_PER_SECOND = 250;
+// Per-second caps tuned to the integer-damage rework:
+//   • Peak enemy spawn rate is 6/s, so 8 kills/s leaves headroom for the
+//     wave-pause-then-flush case without crowning cheaters.
+//   • One split5 + explosive3 volley can briefly spike damage into the
+//     hundreds (5 direct + ~5 × ~3 damage × many enemies in a 230px cloud).
+//     600/s keeps room for that without letting a cheater claim the top
+//     spot with a clearly inflated total.
+const MAX_KILLS_PER_SECOND = 8;
+const MAX_DAMAGE_PER_SECOND = 600;
 const MIN_SUBMIT_INTERVAL_MICROS = 30_000_000n; // 30 seconds per identity
 const MAX_NAME_LEN = 20;
 
@@ -29,10 +33,11 @@ function sanitizeName(raw: string): string {
   return trimmed || 'Bowman';
 }
 
-// Mirrors client `levelForXp` (xp = damage dealt): L = floor((1 + sqrt(1+xp))/2).
+// Mirrors client `levelForXp` (xp = damage dealt) after the k=5 curve
+// change: xpToReach(L) = 5·L·(L-1), so L = floor((1 + sqrt(1 + 0.8·xp))/2).
 // Given claimed damage, returns the max level the XP curve supports.
 function levelForDamage(damage: number): number {
-  return Math.max(1, Math.floor((1 + Math.sqrt(1 + damage)) / 2));
+  return Math.max(1, Math.floor((1 + Math.sqrt(1 + 0.8 * damage)) / 2));
 }
 
 // Strict "new run beats old run" comparator — mirrors the client-side

@@ -41,7 +41,7 @@ import {
   WAVE_DURATION, WAVE_PAUSE_S, WAVE_BASE_COUNT,
   MAX_LEVEL,
   EXPLOSION_RADIUS,
-  BLAZING_PATCH_SPACING, BLAZING_PATCH_RADIUS,
+  BLAZING_PATCH_SPACING, BLAZING_PATCH_RADIUS, BLAZING_PATCH_TRAIL_OFFSET,
   BLAZING_PATCH_DURATION_1, BLAZING_PATCH_DURATION_2, BLAZING_PATCH_DURATION_3,
   BLAZING_PATCH_HIT_DAMAGE,
   SHIELD_REGEN_BASE, SHIELD_REGEN_PER_POWER,
@@ -1055,7 +1055,10 @@ export default function BowSandbox() {
         // Light shots pitch up (1.10x), fully-drawn shots pitch down (0.85x).
         // Reads as "loaded heavier the longer you hold".
         const drawPitch = 1.10 - charge * 0.25;
-        playSfx(ss.id, { pitch: ss.tierPitch * arrowPitch() * drawPitch, volume: 1.1 });
+        // Basic shoot sample recorded noticeably quieter than the others, so
+        // bump it to stay audible under the impact + enemy-death cues.
+        const shootVol = bow === 'basic' ? 1.6 : 1.1;
+        playSfx(ss.id, { pitch: ss.tierPitch * arrowPitch() * drawPitch, volume: shootVol });
       }
 
       function spawnHitRing(x: number, y: number, color: number) {
@@ -1251,8 +1254,9 @@ export default function BowSandbox() {
                         : GRUNT_AURA_TINT;
         spawnHitRing(e.x, e.y, ringColor);
         // Shake scales with how tough the enemy was — a grunt barely rattles
-        // the camera, a broodmother thumps.
-        shake += 2 + e.maxHp * 1.5;
+        // the camera, a broodmother thumps. Coefficient tuned down from 1.5
+        // after the HP rework roughly doubled enemy HP.
+        shake += 2 + e.maxHp * 1.0;
         // XP is now granted per damage dealt (not on kill).
       }
 
@@ -1260,15 +1264,20 @@ export default function BowSandbox() {
         emitExplosion(x, y, radius);
         spawnHitRing(x, y, 0xffaa33);
         shake += 7;
-        // Distance-banded damage: 3 at the core, 2 in the middle third, 1 at
-        // the edge — capped at 3, ignores arrow damage. Ceil ensures even a
-        // hair inside the outer radius deals at least 1.
+        // The visual cloud reaches ~1.7× the tuned `radius`, so damage also
+        // extends that far. Three bands by distance from the center: 3 at the
+        // core, 2 in the middle, 1 everywhere else the cloud is visible.
+        const damageRadius = radius * 1.7;
+        const innerBand = radius * 0.35;
+        const midBand = radius * 0.75;
+        const outerSq = damageRadius * damageRadius;
         for (const e of enemies) {
           if (!e.alive) continue;
           const dx = e.x - x, dy = e.y - y;
           const dsq = dx * dx + dy * dy;
-          if (dsq < radius * radius) {
-            const dmg = Math.max(1, Math.ceil(3 * (1 - Math.sqrt(dsq) / radius)));
+          if (dsq < outerSq) {
+            const d = Math.sqrt(dsq);
+            const dmg = d < innerBand ? 3 : d < midBand ? 2 : 1;
             const eff = Math.max(0, Math.min(dmg, e.hp));
             e.hp -= dmg;
             e.pop = Math.max(e.pop, 0.8);
@@ -1980,12 +1989,22 @@ export default function BowSandbox() {
 
             // Blazing Chevron: drop patches at a fixed pixel spacing (not time),
             // so short-range shots get fewer patches at the same visual stride.
+            // Patches are offset BEHIND the arrow's tip so the arrow can land
+            // its direct hit before its own fire patches can damage the target
+            // (see BLAZING_PATCH_TRAIL_OFFSET).
             if (a.blazing) {
               const spd = Math.hypot(a.vx, a.vy);
               a.blazingAccum += spd * simDt;
-              while (a.blazingAccum >= BLAZING_PATCH_SPACING) {
-                a.blazingAccum -= BLAZING_PATCH_SPACING;
-                spawnBlazingPatch(a.x, a.y, a.blazingPatchDuration);
+              if (spd > 0) {
+                while (a.blazingAccum >= BLAZING_PATCH_SPACING) {
+                  a.blazingAccum -= BLAZING_PATCH_SPACING;
+                  const nvx = a.vx / spd, nvy = a.vy / spd;
+                  spawnBlazingPatch(
+                    a.x - nvx * BLAZING_PATCH_TRAIL_OFFSET,
+                    a.y - nvy * BLAZING_PATCH_TRAIL_OFFSET,
+                    a.blazingPatchDuration,
+                  );
+                }
               }
             }
 
@@ -2001,7 +2020,7 @@ export default function BowSandbox() {
                 grantXp(eff);
                 emitArrowImpact(a.x, a.y);
                 spawnHitRing(a.x, a.y, 0xff9966);
-                shake += 1 + e.maxHp * 0.8;
+                shake += 1 + e.maxHp * 0.5;
                 a.hitEnemies.add(e);
                 // Volley pitch: every impact across the whole volley (split
                 // siblings + ricochet children share one counter, and mines
@@ -2009,7 +2028,11 @@ export default function BowSandbox() {
                 // nine enemies reads as one rising arc.
                 a.volley.hitCount++;
                 const chainPitch = 1 + (a.volley.hitCount - 1) * 0.1;
-                playSfx(impactSoundId(state.loadout.quiver), { pitch: chainPitch });
+                const impactId = impactSoundId(state.loadout.quiver);
+                // Basic impact sample is notably louder than the quiver
+                // variants, so scale it down to sit at parity.
+                const impactVol = impactId === 'impact_basic' ? 0.5 : 1;
+                playSfx(impactId, { pitch: chainPitch, volume: impactVol });
                 if (a.explodeOnHit) applyExplosion(a.x, a.y, a.damage, a.explosionRadius);
                 // Shatter: fire a radial burst at the impact point. Happens
                 // on every direct hit (so a piercing + shatter arrow bursts
@@ -2218,7 +2241,7 @@ export default function BowSandbox() {
               e.alive = false;
               emitEnemyDeathBurst(e);
               if (e.kind === 'mine') playSfx('enemy_death');
-              if (!wasShielded) shake += 3 + e.maxHp * 1.2;
+              if (!wasShielded) shake += 3 + e.maxHp * 0.8;
               damagePlayerFromHazard(ENEMY_TOUCH_DAMAGE, e.x, e.y);
             }
 
@@ -2978,6 +3001,7 @@ export default function BowSandbox() {
           timeSurvived={hud.timeSurvived}
           scores={scores}
           highlightTs={lastScoreTs}
+          submitTs={lastScoreTs}
           onlineScores={onlineScores}
           onlineReady={onlineReady}
           myIdentityHex={myIdentityHex}
@@ -3004,9 +3028,11 @@ export default function BowSandbox() {
           onlineScores={onlineScores}
           onlineReady={onlineReady}
           myIdentityHex={myIdentityHex}
+          submitTs={lastScoreTs}
         />
       )}
 
+      <AttributionLinks />
     </div>
   );
 }
@@ -3038,11 +3064,16 @@ function VolumeSlider({ label, value, onChange, accent }: {
 // Little graphic showing WASD + LMB on the start screen, so the controls are
 // immediately obvious without explanation text.
 // Compact leaderboard table. Rows are rendered as flex rows so the columns
-// stay aligned without an HTML table. The most recent run (matching
-// highlightTs) is tinted so the player can find their row immediately.
-function Leaderboard({ scores, highlightTs, title = 'LEADERBOARD' }: {
+// stay aligned without an HTML table. Two tiers of highlight:
+//   • highlightTs match → full-row tint (the "current record", i.e. the run
+//     that was just submitted/saved this session).
+//   • _identity match on myIdentityHex → only the NAME cell tinted (a past
+//     submission of this player). Used on the online board so a returning
+//     player can spot their old entries without the whole row shouting.
+function Leaderboard({ scores, highlightTs, myIdentityHex, title = 'LEADERBOARD' }: {
   scores: Score[];
   highlightTs?: number | null;
+  myIdentityHex?: string | null;
   title?: string;
 }) {
   if (scores.length === 0) {
@@ -3080,16 +3111,18 @@ function Leaderboard({ scores, highlightTs, title = 'LEADERBOARD' }: {
         <div style={cLvl}>LVL</div>
       </div>
       {scores.map((s, i) => {
-        const mine = highlightTs != null && s.ts === highlightTs;
+        const current = highlightTs != null && s.ts === highlightTs;
+        const rowIdentity = (s as Score & { _identity?: string })._identity;
+        const isMinePast = !current && myIdentityHex != null && rowIdentity != null && rowIdentity === myIdentityHex;
         return (
           <div key={s.ts} style={{
             ...rowBase,
-            background: mine ? 'rgba(255,170,60,0.18)' : (i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent'),
-            color: mine ? '#ffd7a0' : '#bcd',
-            border: mine ? '1px solid #ffaa66' : '1px solid transparent',
+            background: current ? 'rgba(255,170,60,0.18)' : (i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent'),
+            color: current ? '#ffd7a0' : '#bcd',
+            border: current ? '1px solid #ffaa66' : '1px solid transparent',
           }}>
             <div style={cRank}>{i + 1}</div>
-            <div style={cName}>{s.name}</div>
+            <div style={{ ...cName, ...(isMinePast ? { color: '#ffcf88', fontWeight: 600 } : null) }}>{s.name}</div>
             <div style={cDmg}>{s.damage}</div>
             <div style={cTime}>{fmtMMSS(s.time)}</div>
             <div style={cKills}>{s.kills}</div>
@@ -3107,13 +3140,19 @@ function Leaderboard({ scores, highlightTs, title = 'LEADERBOARD' }: {
 // Number for ts (rank-highlight) — ids are monotonic and fit comfortably in
 // Number for the lifetime of a leaderboard. Falls back to a "connecting"
 // placeholder while the subscription hasn't returned.
-function OnlineLeaderboard({ scores, myIdentityHex, title = 'ONLINE LEADERBOARD', ready }: {
+function OnlineLeaderboard({ scores, myIdentityHex, submitTs, title = 'ONLINE LEADERBOARD', ready }: {
   scores: readonly OnlineScore[];
   myIdentityHex: string | null;
+  // Client-side wallclock of this session's submission (Date.now()). Used to
+  // pick which of this player's rows is the "current record" for the full-
+  // row highlight. Null when the player hasn't submitted this session; all
+  // their rows then get only the name-only past highlight.
+  submitTs: number | null;
   title?: string;
   ready: boolean;
 }) {
-  const mapped: Score[] = useMemo(() => {
+  type MappedScore = Score & { _identity: string; _submittedAtMs: number };
+  const mapped: MappedScore[] = useMemo(() => {
     return [...scores]
       .map(s => ({
         name: s.name,
@@ -3123,16 +3162,31 @@ function OnlineLeaderboard({ scores, myIdentityHex, title = 'ONLINE LEADERBOARD'
         time: s.timeSeconds,
         ts: Number(s.id),
         _identity: s.identity.toHexString(),
-      } as Score & { _identity: string }))
+        _submittedAtMs: Number(s.submittedAt.microsSinceUnixEpoch / 1000n),
+      } as MappedScore))
       .sort(compareScores)
       .slice(0, MAX_SCORES);
   }, [scores]);
 
+  // "Current record" = the mine row whose server-side submittedAt is closest
+  // to our client-side submitTs, within a 5-minute tolerance. Outside that
+  // window we assume the row belongs to a prior session and leave it as a
+  // past submission (name-only highlight).
   const highlightTs = useMemo(() => {
-    if (!myIdentityHex) return null;
-    const mine = mapped.find(s => (s as Score & { _identity: string })._identity === myIdentityHex);
-    return mine ? mine.ts : null;
-  }, [mapped, myIdentityHex]);
+    if (!myIdentityHex || submitTs == null) return null;
+    const TOLERANCE_MS = 5 * 60 * 1000;
+    let bestTs: number | null = null;
+    let bestDelta = Infinity;
+    for (const s of mapped) {
+      if (s._identity !== myIdentityHex) continue;
+      const delta = Math.abs(s._submittedAtMs - submitTs);
+      if (delta <= TOLERANCE_MS && delta < bestDelta) {
+        bestDelta = delta;
+        bestTs = s.ts;
+      }
+    }
+    return bestTs;
+  }, [mapped, myIdentityHex, submitTs]);
 
   if (!ready) {
     return (
@@ -3148,15 +3202,14 @@ function OnlineLeaderboard({ scores, myIdentityHex, title = 'ONLINE LEADERBOARD'
       </div>
     );
   }
-  return <Leaderboard scores={mapped} highlightTs={highlightTs} title={title} />;
+  return <Leaderboard scores={mapped} highlightTs={highlightTs} myIdentityHex={myIdentityHex} title={title} />;
 }
 
-// Bottom-left attribution on the menu + game-over screens. AutoGPT logo
-// links to Significant-Gravitas/AutoGPT (jam entry affiliation); GitHub
-// icon links to the game's source. Fixed-positioned so it sits below
-// all the centered modals without ever crowding them. Uses the Vite
-// BASE_URL so the png resolves both in dev (/) and under /bow/ on GH
-// Pages.
+// Bottom-left attribution shown on every screen (menu, gameplay, level-up,
+// game over). Links out to the game's source on GitHub and to AutoGPT (jam
+// entry affiliation). `position: fixed` so it survives every overlay; the
+// container itself is `pointer-events: none` so only the two icon links are
+// interactive — they don't block click-through during gameplay.
 function AttributionLinks() {
   const linkStyle: React.CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -3165,14 +3218,27 @@ function AttributionLinks() {
   };
   return (
     <div style={{
-      position: 'absolute', left: 20, bottom: 20,
+      position: 'fixed', left: 20, bottom: 20,
       display: 'flex', alignItems: 'center', gap: 14,
-      pointerEvents: 'none',
+      pointerEvents: 'none', zIndex: 40,
     }}>
       <a
-        href="https://github.com/Significant-Gravitas/AutoGPT"
+        href="https://github.com/kcze/bow"
         target="_blank" rel="noreferrer noopener"
-        title="AutoGPT"
+        title="Source on GitHub"
+        style={linkStyle}
+        onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+        onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
+        data-no-draw-start
+      >
+        <svg width="38" height="38" viewBox="0 0 24 24" fill="#e8ecff" aria-hidden="true">
+          <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.332-1.755-1.332-1.755-1.09-.745.082-.73.082-.73 1.205.084 1.84 1.235 1.84 1.235 1.07 1.835 2.807 1.305 3.492.997.107-.775.42-1.305.762-1.605-2.665-.303-5.467-1.335-5.467-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.175 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.652.24 2.872.12 3.175.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+        </svg>
+      </a>
+      <a
+        href="https://platform.agpt.co/"
+        target="_blank" rel="noreferrer noopener"
+        title="AutoGPT Platform"
         style={linkStyle}
         onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
         onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
@@ -3198,19 +3264,6 @@ function AttributionLinks() {
             <path d="M87.4713 32.257C88.2434 32.257 88.8693 31.6311 88.8693 30.859C88.8693 30.0869 88.2434 29.4609 87.4713 29.4609C86.6992 29.4609 86.0732 30.0869 86.0732 30.859C86.0732 31.6311 86.6992 32.257 87.4713 32.257Z" />
             <path d="M49.2167 39.9475C49.9888 39.9475 50.6147 39.3215 50.6147 38.5494C50.6147 37.7773 49.9888 37.1514 49.2167 37.1514C48.4445 37.1514 47.8186 37.7773 47.8186 38.5494C47.8186 39.3215 48.4445 39.9475 49.2167 39.9475Z" />
           </g>
-        </svg>
-      </a>
-      <a
-        href="https://github.com/kcze/bow"
-        target="_blank" rel="noreferrer noopener"
-        title="Source on GitHub"
-        style={linkStyle}
-        onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-        onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
-        data-no-draw-start
-      >
-        <svg width="38" height="38" viewBox="0 0 24 24" fill="#e8ecff" aria-hidden="true">
-          <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.332-1.755-1.332-1.755-1.09-.745.082-.73.082-.73 1.205.084 1.84 1.235 1.84 1.235 1.07 1.835 2.807 1.305 3.492.997.107-.775.42-1.305.762-1.605-2.665-.303-5.467-1.335-5.467-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.175 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.652.24 2.872.12 3.175.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
         </svg>
       </a>
     </div>
@@ -3259,7 +3312,7 @@ function ControlsHint() {
 function StartScreen({
   playerName, onPlayerName, onStart,
   musicVol, sfxVol, onMusicVol, onSfxVol,
-  scores, onlineScores, onlineReady, myIdentityHex,
+  scores, onlineScores, onlineReady, myIdentityHex, submitTs,
 }: {
   playerName: string;
   onPlayerName: (n: string) => void;
@@ -3271,6 +3324,7 @@ function StartScreen({
   onlineScores: readonly OnlineScore[];
   onlineReady: boolean;
   myIdentityHex: string | null;
+  submitTs: number | null;
 }) {
   // Empty draft when the stored name is still the default — we show it as a
   // placeholder instead so the field reads as inviting rather than prefilled.
@@ -3361,10 +3415,8 @@ function StartScreen({
         width: 280, display: 'flex', flexDirection: 'column', gap: 18,
       }}>
         <Leaderboard scores={scores} title="LOCAL LEADERBOARD" />
-        <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} />
+        <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} submitTs={submitTs} />
       </div>
-
-      <AttributionLinks />
     </div>
   );
 }
@@ -3374,12 +3426,13 @@ function StartScreen({
 // local scores + the eventual online board get a fresh prompt between runs.
 function GameOverScreen({
   level, kills, damageDealt, timeSurvived,
-  scores, highlightTs, onRestart,
+  scores, highlightTs, submitTs, onRestart,
   onlineScores, onlineReady, myIdentityHex,
 }: {
   level: number; kills: number; damageDealt: number; timeSurvived: number;
   scores: Score[];
   highlightTs: number | null;
+  submitTs: number | null;
   onRestart: () => void;
   onlineScores: readonly OnlineScore[];
   onlineReady: boolean;
@@ -3458,11 +3511,9 @@ function GameOverScreen({
           opacity: 0, animation: 'fadeIn 420ms ease forwards 420ms',
         }}>
           <Leaderboard scores={scores} highlightTs={highlightTs} title="LOCAL LEADERBOARD" />
-          <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} />
+          <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} submitTs={submitTs} />
         </div>
       </div>
-
-      <AttributionLinks />
     </div>
   );
 }
