@@ -3070,7 +3070,11 @@ export default function BowSandbox() {
                 card stays reachable at scrollLeft=0. Snap is `proximity` so
                 it doesn't fight the user when they drag toward the edges —
                 a `mandatory` snap with `center` alignment was pulling the
-                leftmost card back to the middle, hiding its left edge. */}
+                leftmost card back to the middle, hiding its left edge.
+                Vertical padding (with matching negative margin) gives the
+                hover animation — translateY(-4px) + scale(1.02) + glow —
+                room to breathe; without it, overflow-x:auto forces y to
+                clip and the lifted card gets cut off at the top. */}
             <div style={{
               display: 'flex', gap: 10, alignItems: 'stretch',
               justifyContent: 'safe center',
@@ -3078,9 +3082,8 @@ export default function BowSandbox() {
               overflowX: 'auto', overflowY: 'hidden',
               scrollSnapType: 'x proximity',
               WebkitOverflowScrolling: 'touch',
-              paddingBottom: 4,            // room for inertial bounce
-              margin: '0 -12px',           // bleed scroll area beyond modal padding
-              paddingLeft: 12, paddingRight: 12,
+              padding: '20px 12px 24px',
+              margin: '-16px -12px -20px',
             }}>
               {hud.levelUpChoices.map((c, i) => (
                 <div
