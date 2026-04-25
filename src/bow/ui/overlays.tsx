@@ -345,10 +345,10 @@ export function UpgradeCard({ idx, choice, onClick, enabled, loadout, statLevels
 // without waiting on level-up rolls.
 export function UpgradeGallery({ onPick }: { onPick?: (id: string) => void }) {
   const groups: Array<{ label: string; kind: UpgradeKind }> = [
-    { label: 'Mods',    kind: 'mod' },
-    { label: 'Bows',    kind: 'bow' },
-    { label: 'Quivers', kind: 'quiver' },
-    { label: 'Items',   kind: 'item' },
+    { label: 'Mod',   kind: 'mod' },
+    { label: 'Bow',   kind: 'bow' },
+    { label: 'Arrow', kind: 'quiver' },
+    { label: 'Item',  kind: 'item' },
   ];
   const clickable = !!onPick;
   return (
@@ -431,7 +431,7 @@ export function familiesForUpgrade(id: string): string[] {
   // Stat mods share labels with the STAT_FAMILIES row entries below.
   const STAT_LABELS: Record<string, string> = {
     dmg: 'Damage', spd: 'Speed', draw: 'Draw', reload: 'Reload',
-    arrowspd: 'Range', quiver: 'Quiver', hp: 'Max HP', 'item-power': 'Item Power',
+    arrowspd: 'Range', quiver: 'Max Arrows', hp: 'Max HP', 'item-power': 'Item Power',
   };
   return STAT_LABELS[id] ? [STAT_LABELS[id]] : [];
 }
@@ -522,7 +522,7 @@ const STAT_FAMILIES: Array<{ label: string; id: string; maxStacks: number; accen
   { label: 'Draw',       id: 'draw',       maxStacks: 3, accent: '#ffcc44' },
   { label: 'Reload',     id: 'reload',     maxStacks: 3, accent: '#aaddff' },
   { label: 'Range',      id: 'arrowspd',   maxStacks: 3, accent: '#cc99ff' },
-  { label: 'Quiver',     id: 'quiver',     maxStacks: 3, accent: '#ddbb88' },
+  { label: 'Max Arrows', id: 'quiver',     maxStacks: 3, accent: '#ddbb88' },
   { label: 'Max HP',     id: 'hp',         maxStacks: 3, accent: '#ff6688' },
   { label: 'Item Power', id: 'item-power', maxStacks: 3, accent: '#eeaa44' },
 ];
@@ -594,11 +594,11 @@ export function ProgressionPanel({ bow, quiver, item, statLevels, highlightFamil
     <div style={{ display: 'flex', gap: 28, justifyContent: 'center', fontFamily: 'monospace', padding: '4px 6px', flexWrap: 'wrap' }}>
       {!leftEmpty && (
         <div style={colStyle}>
-          {bowPicks.length > 0 && <div style={sectionTitle}>BOWS</div>}
+          {bowPicks.length > 0 && <div style={sectionTitle}>BOW</div>}
           {bowPicks.map(f => renderFamilyRow(f.label, f.accent, levelOf(bow, f.levels), f.levels.length))}
-          {quiverPicks.length > 0 && <div style={{ ...sectionTitle, marginTop: 4 }}>QUIVERS</div>}
+          {quiverPicks.length > 0 && <div style={{ ...sectionTitle, marginTop: 4 }}>ARROW</div>}
           {quiverPicks.map(f => renderFamilyRow(f.label, f.accent, levelOf(quiver, f.levels), f.levels.length))}
-          {itemPicks.length > 0 && <div style={{ ...sectionTitle, marginTop: 4 }}>ITEMS</div>}
+          {itemPicks.length > 0 && <div style={{ ...sectionTitle, marginTop: 4 }}>ITEM</div>}
           {itemPicks.map(f => renderFamilyRow(f.label, f.accent, levelOf(item, f.levels), f.levels.length))}
         </div>
       )}
@@ -622,7 +622,7 @@ export function DebugPanel({ stats, loadout, onClose }: {
     ['draw rate mult',   stats.drawRateMult.toFixed(2) + 'x'],
     ['reload mult',      stats.reloadRateMult.toFixed(2) + 'x'],
     ['arrow speed mult', stats.arrowSpeedMult.toFixed(2) + 'x'],
-    ['quiver bonus',     '+' + stats.quiverBonus],
+    ['max arrows bonus', '+' + stats.quiverBonus],
   ];
   return (
     <div style={{
@@ -656,7 +656,7 @@ export function DebugPanel({ stats, loadout, onClose }: {
       <div style={{ marginBottom: 10 }}>
         <div style={{ color: '#99b', marginBottom: 4 }}>Loadout</div>
         <div style={{ color: '#ffd288' }}>Bow: {BOW_LABEL[loadout.bow]}</div>
-        <div style={{ color: QUIVER_ACCENT[loadout.quiver] }}>Quiver: {QUIVER_LABEL[loadout.quiver]}</div>
+        <div style={{ color: QUIVER_ACCENT[loadout.quiver] }}>Arrows: {QUIVER_LABEL[loadout.quiver]}</div>
         <div style={{ color: '#eeaa44' }}>Item: {ITEM_LABEL[loadout.item] || '—'}</div>
       </div>
 
@@ -677,7 +677,7 @@ export function DebugPanel({ stats, loadout, onClose }: {
                   <div style={{ color: '#fff' }}>{u.name}</div>
                   <div style={{ color: '#889', fontSize: 10 }}>{u.desc}</div>
                 </td>
-                <td style={{ padding: '3px 4px', color: u.kind === 'bow' ? '#ddbb88' : u.kind === 'quiver' ? '#ff8844' : u.kind === 'item' ? '#eeaa44' : '#66ccff' }}>{u.kind}</td>
+                <td style={{ padding: '3px 4px', color: u.kind === 'bow' ? '#ddbb88' : u.kind === 'quiver' ? '#ff8844' : u.kind === 'item' ? '#eeaa44' : '#66ccff' }}>{u.kind === 'quiver' ? 'arrow' : u.kind}</td>
                 <td style={{ padding: '3px 4px', textAlign: 'right', color: '#aab' }}>{u.weight}</td>
               </tr>
             ))}

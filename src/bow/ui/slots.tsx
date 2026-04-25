@@ -12,7 +12,7 @@ export const BOW_LABEL: Record<BowKind, string> = {
 };
 
 export const QUIVER_LABEL: Record<QuiverKind, string> = {
-  basic: 'Basic Quiver',
+  basic: 'Basic Arrows',
   explosive: 'Explosive I', explosive2: 'Explosive II', explosive3: 'Explosive III',
   piercing: 'Piercing I', piercing2: 'Piercing II', piercing3: 'Piercing III',
   blazing: 'Blazing I', blazing2: 'Blazing II', blazing3: 'Blazing III',

@@ -144,6 +144,33 @@ function saveScore(score: Score): Score[] {
   return all;
 }
 
+// "Mobile" = touch-capable OR narrow viewport. The viewport-width fallback
+// matters because Chrome's responsive-design mode doesn't enable touch
+// events unless you explicitly toggle the touch icon or pick a mobile
+// device profile — without it, dragging the browser narrow wouldn't
+// surface the joysticks for testing. Real phones and tablets satisfy the
+// touch check; desktops with a narrow window get the mobile treatment too.
+const MOBILE_MAX_WIDTH = 820;
+function detectTouchDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints ?? 0) > 0;
+  const narrow = window.innerWidth <= MOBILE_MAX_WIDTH;
+  return hasTouch || narrow;
+}
+
+// Bridge between the touch UI (React JSX) and the game closure (giant
+// useEffect). The closure populates this on init; the joysticks call into
+// it. Keeps the closure self-contained — touch input goes through the same
+// pressDraw/releaseDraw paths as the mouse, so gameplay logic stays in one
+// place.
+interface InputBridge {
+  setMove(x: number, y: number): void;          // -1..1 from left stick; 0,0 = idle
+  setMouse(x: number, y: number): void;          // virtual cursor for aim
+  pressDraw(): void;                             // begin drawing the bow
+  releaseDraw(): void;                           // fire (using current mouse aim)
+  getPlayerScreen(): { x: number; y: number };   // for joystick → virtual mouse projection
+}
+
 export default function BowSandbox() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const pickUpgradeRef = useRef<((i: number) => void) | null>(null);
@@ -159,9 +186,23 @@ export default function BowSandbox() {
   const finalizeRunRef = useRef<((run: {
     level: number; kills: number; damage: number; timeSurvived: number;
   }) => void) | null>(null);
+  const inputBridgeRef = useRef<InputBridge | null>(null);
+  const [isMobile, setIsMobile] = useState<boolean>(() => detectTouchDevice());
+  // Re-check on resize so devtools "responsive mode" toggling shows/hides
+  // the joysticks without a page refresh.
+  useEffect(() => {
+    const onResize = () => setIsMobile(detectTouchDevice());
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   const [showDebug, setShowDebug] = useState(false);
   const [cardsReady, setCardsReady] = useState(false);
   const [hoveredCardId, setHoveredCardId] = useState<string | null>(null);
+  // Which equipped-loadout slot the player's hovering — drives the same
+  // ProgressionPanel highlight that level-up cards use, so the player can
+  // glance at their bottom HUD and see "this Bow row in the panel is the
+  // tree I'm currently in".
+  const [hoveredSlot, setHoveredSlot] = useState<'bow' | 'quiver' | 'item' | null>(null);
   const [musicVol, setMusicVol] = useState<number>(() => getMusicVolume());
   const [sfxVol, setSfxVol] = useState<number>(() => getMasterVolume());
   const [playerName, setPlayerName] = useState<string>(() => {
@@ -1594,6 +1635,48 @@ export default function BowSandbox() {
       togglePauseRef.current = () => { togglePause(); };
 
       // ── Input ─────────────────────────────────────────────────────────────
+      // Touch-stick state. `touchMove` is summed into the keyboard input each
+      // tick. `playerScreen` is updated each frame so the right joystick can
+      // project its offset to a virtual mouse position relative to the player.
+      const touchMove = { x: 0, y: 0 };
+      const playerScreen = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+      const isTouch = detectTouchDevice();
+
+      function pressDraw() {
+        unlockSfx();
+        if (state.dead || state.dying || state.paused) return;
+        if (state.arrows > 0) {
+          drawing = true; drawCharge = 0;
+        } else {
+          playSfx('ui_empty_draw', { volume: 1.8 });
+        }
+      }
+      function releaseDraw() {
+        if (!drawing || state.dead || state.dying || state.paused) return;
+        drawing = false;
+        if (state.arrows > 0) {
+          const W = window.innerWidth, H = window.innerHeight;
+          const worldMx = mouse.screenX - W / 2 + cam.x;
+          const worldMy = mouse.screenY - H / 2 + cam.y;
+          const aimDx = worldMx - player.x;
+          const aimDy = worldMy - player.y;
+          const len = Math.hypot(aimDx, aimDy) || 1;
+          fireShot(aimDx / len, aimDy / len, drawCharge);
+          state.arrows--;
+          if (state.reloadRemaining <= 0) state.reloadRemaining = reloadSeconds();
+          else state.reloadQueued++;
+        }
+        drawCharge = 0;
+      }
+
+      inputBridgeRef.current = {
+        setMove(x, y) { touchMove.x = x; touchMove.y = y; },
+        setMouse(x, y) { mouse.screenX = x; mouse.screenY = y; },
+        pressDraw,
+        releaseDraw,
+        getPlayerScreen() { return { x: playerScreen.x, y: playerScreen.y }; },
+      };
+
       const onKeyDown = (e: KeyboardEvent) => {
         unlockSfx();
         keys[e.code] = true;
@@ -1620,41 +1703,21 @@ export default function BowSandbox() {
       const onKeyUp = (e: KeyboardEvent) => { keys[e.code] = false; };
       const onMouseMove = (e: MouseEvent) => { mouse.screenX = e.clientX; mouse.screenY = e.clientY; };
       const onMouseDown = (e: MouseEvent) => {
-        unlockSfx();
         if (e.button !== 0) return;
-        // Pressing LMB on the awaiting-start screen boots the game AND
-        // continues into the normal draw, so the player can just click and
-        // hold to start shooting.
-        if (state.awaitingStart) {
-          const target = e.target as HTMLElement | null;
-          // Ignore clicks on form controls (name input, sliders, buttons).
-          if (target && target.closest('input, button, [data-no-draw-start]')) return;
-          startGame();
-        }
-        if (state.dead || state.dying || state.paused) return;
-        if (state.arrows > 0) {
-          drawing = true; drawCharge = 0;
-        } else {
-          playSfx('ui_empty_draw', { volume: 1.8 });
-        }
+        // Don't start a draw when the click is on a UI element (pause
+        // button, sliders, name input, etc.). Without this, clicking the
+        // pause button fires an arrow because mousedown→pressDraw runs
+        // before React's onClick has toggled paused, then mouseup→
+        // releaseDraw shoots. `pressDraw()` bails harmlessly while
+        // paused/awaitingStart, but still unlocks the audio context so
+        // the first sfx isn't muted.
+        const target = e.target as HTMLElement | null;
+        if (target && target.closest('input, button, [data-no-draw-start]')) return;
+        pressDraw();
       };
       const onMouseUp = (e: MouseEvent) => {
-        if (e.button === 0 && drawing && !state.dead && !state.dying && !state.paused) {
-          drawing = false;
-          if (state.arrows > 0) {
-            const W = window.innerWidth, H = window.innerHeight;
-            const worldMx = mouse.screenX - W / 2 + cam.x;
-            const worldMy = mouse.screenY - H / 2 + cam.y;
-            const aimDx = worldMx - player.x;
-            const aimDy = worldMy - player.y;
-            const len = Math.hypot(aimDx, aimDy) || 1;
-            fireShot(aimDx / len, aimDy / len, drawCharge);
-            state.arrows--;
-            if (state.reloadRemaining <= 0) state.reloadRemaining = reloadSeconds();
-            else state.reloadQueued++;
-          }
-          drawCharge = 0;
-        }
+        if (e.button !== 0) return;
+        releaseDraw();
       };
       const onContext = (e: MouseEvent) => e.preventDefault();
       const onResize = () => app.renderer.resize(window.innerWidth, window.innerHeight);
@@ -1673,6 +1736,7 @@ export default function BowSandbox() {
         window.removeEventListener('mouseup', onMouseUp);
         window.removeEventListener('contextmenu', onContext);
         window.removeEventListener('resize', onResize);
+        inputBridgeRef.current = null;
       };
 
       startWave(1);
@@ -1727,12 +1791,17 @@ export default function BowSandbox() {
         const simDt = updatesPaused ? 0 : rawDt;
 
         if (!updatesPaused && !state.dying) {
-          const dx = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
-          const dy = (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0) - (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
-          const mag = Math.hypot(dx, dy) || 1;
+          const dxKbd = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
+          const dyKbd = (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0) - (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
+          // Keyboard + virtual stick are summed; mag-cap at 1 so a fully
+          // pressed stick + key combo doesn't exceed the normal speed.
+          let dx = dxKbd + touchMove.x;
+          let dy = dyKbd + touchMove.y;
+          const mag = Math.hypot(dx, dy);
+          if (mag > 1) { dx /= mag; dy /= mag; }
           const mv = playerSpeed() * (drawing ? DRAW_PLAYER_SPEED_MULT : 1);
-          player.x += (dx / mag) * mv * simDt * (dx || dy ? 1 : 0);
-          player.y += (dy / mag) * mv * simDt * (dx || dy ? 1 : 0);
+          player.x += dx * mv * simDt;
+          player.y += dy * mv * simDt;
 
           const pr = Math.hypot(player.x, player.y);
           if (pr > ARENA_RADIUS) { const k = ARENA_RADIUS / pr; player.x *= k; player.y *= k; }
@@ -1811,6 +1880,9 @@ export default function BowSandbox() {
         // between the dying→dead transition and the React game-over overlay.
         const psx = player.x - camX + W / 2;
         const psy = player.y - camY + H / 2;
+        // Publish for the right joystick — it projects its stick offset to
+        // a virtual mouse position relative to the player on screen.
+        playerScreen.x = psx; playerScreen.y = psy;
         const playerVisible = !state.dying && !state.dead;
         playerAura.visible = playerVisible;
         // HP segments — one short arc per max HP, laid out along the same
@@ -2557,9 +2629,12 @@ export default function BowSandbox() {
         }
 
         // Cursor ring — one segment per quiver slot, filled in the quiver
-        // accent color. Slot currently reloading fills proportionally.
+        // accent color. Slot currently reloading fills proportionally. On
+        // touch devices the virtual mouse only updates while the right stick
+        // is held, so we hide the ring otherwise — a stale crosshair where
+        // the player last released would read like a bug.
         cursorGfx.clear();
-        if (!state.dead && !state.dying && !state.awaitingStart) {
+        if (!state.dead && !state.dying && !state.awaitingStart && (!isTouch || drawing)) {
           const maxQ = maxQuiver();
           if (maxQ > 0) {
             const cx = mouse.screenX, cy = mouse.screenY;
@@ -2701,16 +2776,52 @@ export default function BowSandbox() {
 
   const levelUpHighlightFamilies = useMemo(() => {
     const set = new Set<string>();
-    if (hoveredCardId) {
-      for (const fam of familiesForUpgrade(hoveredCardId)) set.add(fam);
-    }
-    return set;
-  }, [hoveredCardId]);
+    // Helpers — the family label of the player's currently-equipped item in
+    // each slot type, or null if they have nothing in that slot yet.
+    const currentBowFamily = (() => {
+      const t = BOW_TREE_OF[hud.loadout.bow];
+      return t ? t[0].toUpperCase() + t.slice(1) : null;
+    })();
+    const currentQuiverFamily = (() => {
+      const t = QUIVER_TREE_OF[hud.loadout.quiver];
+      return t ? t[0].toUpperCase() + t.slice(1) : null;
+    })();
+    const currentItemFamily = (() => {
+      const it = hud.loadout.item;
+      if (it === 'shield') return 'Shield';
+      if (it === 'ring') return 'Shockwave';
+      if (it === 'embers') return 'Fire Trail';
+      return null;
+    })();
 
-  // Reset hover when the level-up overlay closes so a stale id can't carry
+    if (hoveredCardId) {
+      const u = UPGRADES.find(x => x.id === hoveredCardId);
+      // Bow/arrow/item cards highlight the player's CURRENT family in that
+      // slot (the row being replaced/upgraded), so mod behavior is matched:
+      // if no row exists yet, no glow. Mod cards still use the static map.
+      if (u?.kind === 'bow') {
+        if (currentBowFamily) set.add(currentBowFamily);
+      } else if (u?.kind === 'quiver') {
+        if (currentQuiverFamily) set.add(currentQuiverFamily);
+      } else if (u?.kind === 'item') {
+        if (currentItemFamily) set.add(currentItemFamily);
+      } else {
+        for (const fam of familiesForUpgrade(hoveredCardId)) set.add(fam);
+      }
+    }
+    if (hoveredSlot === 'bow' && currentBowFamily) set.add(currentBowFamily);
+    else if (hoveredSlot === 'quiver' && currentQuiverFamily) set.add(currentQuiverFamily);
+    else if (hoveredSlot === 'item' && currentItemFamily) set.add(currentItemFamily);
+    return set;
+  }, [hoveredCardId, hoveredSlot, hud.loadout.bow, hud.loadout.quiver, hud.loadout.item]);
+
+  // Reset hovers when the level-up overlay closes so a stale id can't carry
   // over into the next prompt.
   useEffect(() => {
-    if (!hud.levelUpPending) setHoveredCardId(null);
+    if (!hud.levelUpPending) {
+      setHoveredCardId(null);
+      setHoveredSlot(null);
+    }
   }, [hud.levelUpPending]);
 
   // Gate level-up clicks until all cards have animated in, so you can't
@@ -2812,16 +2923,25 @@ export default function BowSandbox() {
         // On the start screen it wears an orange frame + onboarding caption
         // and floats above the modal's backdrop so the player can see it
         // clearly against the dark overlay. During gameplay it's bare.
+        // During level-up it lifts above the modal backdrop so the slots
+        // remain visible and individually hoverable — hovering one
+        // highlights the corresponding row in the ProgressionPanel.
         const highlight = hud.awaitingStart;
         const accent = '#ffaa66';
+        const slotInteractive = hud.levelUpPending;
+        const slotWrapStyle: React.CSSProperties = {
+          pointerEvents: slotInteractive ? 'auto' : 'none',
+          cursor: slotInteractive ? 'default' : 'auto',
+        };
         return (
           <div style={{
             position: 'fixed', bottom: 14, left: '50%', transform: 'translateX(-50%)',
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
             fontFamily: 'monospace',
-            // Pop above the start-screen backdrop (z=30) when highlighted so
-            // the outline actually reads.
-            zIndex: highlight ? 32 : 5,
+            // Above the start-screen backdrop (z=30) when highlighted; above
+            // the level-up modal backdrop (z=19) while picking, so the slots
+            // are reachable for hover.
+            zIndex: highlight ? 32 : (slotInteractive ? 25 : 5),
             pointerEvents: 'none',
           }}>
             <div style={{
@@ -2833,19 +2953,37 @@ export default function BowSandbox() {
               boxShadow: highlight ? `0 0 20px ${accent}88, 0 4px 24px rgba(0,0,0,0.6)` : 'none',
               transition: 'background 200ms, border-color 200ms, box-shadow 200ms, padding 200ms',
             }}>
-              <BowSlot bow={hud.loadout.bow} />
-              <QuiverSlot
-                arrows={hud.arrows} max={hud.maxArrows}
-                reloadRemaining={hud.reloadRemaining} reloadSeconds={hud.reloadSeconds}
-                kind={hud.loadout.quiver}
-              />
-              <ItemSlot
-                item={hud.loadout.item}
-                shieldUp={hud.shieldUp}
-                shieldRegenFrac={hud.shieldRegenFrac}
-                itemPower={hud.itemPowerLevel}
-                placeholder={highlight}
-              />
+              <div
+                style={slotWrapStyle}
+                onMouseEnter={() => slotInteractive && setHoveredSlot('bow')}
+                onMouseLeave={() => setHoveredSlot(s => s === 'bow' ? null : s)}
+              >
+                <BowSlot bow={hud.loadout.bow} />
+              </div>
+              <div
+                style={slotWrapStyle}
+                onMouseEnter={() => slotInteractive && setHoveredSlot('quiver')}
+                onMouseLeave={() => setHoveredSlot(s => s === 'quiver' ? null : s)}
+              >
+                <QuiverSlot
+                  arrows={hud.arrows} max={hud.maxArrows}
+                  reloadRemaining={hud.reloadRemaining} reloadSeconds={hud.reloadSeconds}
+                  kind={hud.loadout.quiver}
+                />
+              </div>
+              <div
+                style={slotWrapStyle}
+                onMouseEnter={() => slotInteractive && setHoveredSlot('item')}
+                onMouseLeave={() => setHoveredSlot(s => s === 'item' ? null : s)}
+              >
+                <ItemSlot
+                  item={hud.loadout.item}
+                  shieldUp={hud.shieldUp}
+                  shieldRegenFrac={hud.shieldRegenFrac}
+                  itemPower={hud.itemPowerLevel}
+                  placeholder={highlight}
+                />
+              </div>
             </div>
             {highlight && (
               <div style={{
@@ -2909,7 +3047,13 @@ export default function BowSandbox() {
           <div style={{
             position: 'relative', zIndex: 1,
             background: 'rgba(18,22,32,0.96)', border: '1px solid #66ccff',
-            borderRadius: 10, padding: 24, minWidth: 520, maxWidth: 780, textAlign: 'center',
+            borderRadius: 10, padding: 24,
+            // On narrow screens the modal collapses to viewport width and
+            // shifts to a vertical-scroll fallback so the cards/HP/panel
+            // stack cleanly instead of overflowing horizontally.
+            width: '100%', maxWidth: 780, minWidth: 0,
+            maxHeight: '92vh', overflowY: 'auto',
+            textAlign: 'center',
             animation: 'scaleIn 360ms cubic-bezier(0.22, 0.9, 0.3, 1.1) forwards',
           }}>
             <div style={{
@@ -2920,7 +3064,24 @@ export default function BowSandbox() {
               fontSize: 30, color: '#ffcc44', marginBottom: 14,
               opacity: 0, animation: 'fadeUp 380ms ease forwards 180ms, pulseGlow 2000ms ease-in-out infinite 700ms',
             }}>Level {hud.level}</div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap', alignItems: 'stretch' }}>
+            {/* Cards: horizontal scroll instead of wrap so the modal height
+                stays predictable. `safe center` centers the row when it
+                fits, but falls back to flex-start on overflow so the first
+                card stays reachable at scrollLeft=0. Snap is `proximity` so
+                it doesn't fight the user when they drag toward the edges —
+                a `mandatory` snap with `center` alignment was pulling the
+                leftmost card back to the middle, hiding its left edge. */}
+            <div style={{
+              display: 'flex', gap: 10, alignItems: 'stretch',
+              justifyContent: 'safe center',
+              flexWrap: 'nowrap',
+              overflowX: 'auto', overflowY: 'hidden',
+              scrollSnapType: 'x proximity',
+              WebkitOverflowScrolling: 'touch',
+              paddingBottom: 4,            // room for inertial bounce
+              margin: '0 -12px',           // bleed scroll area beyond modal padding
+              paddingLeft: 12, paddingRight: 12,
+            }}>
               {hud.levelUpChoices.map((c, i) => (
                 <div
                   key={c.id}
@@ -2929,6 +3090,8 @@ export default function BowSandbox() {
                     animation: `fadeUp 400ms ease forwards ${280 + i * 90}ms`,
                     pointerEvents: cardsReady ? 'auto' : 'none',
                     display: 'flex',
+                    flexShrink: 0,
+                    scrollSnapAlign: 'start',
                   }}
                 >
                   <UpgradeCard
@@ -2984,7 +3147,7 @@ export default function BowSandbox() {
             <div style={{
               marginTop: 10, fontSize: 10, color: '#667',
               opacity: 0, animation: 'fadeIn 400ms ease forwards 800ms',
-            }}>Click a card, or press 1 / 2 / 3</div>
+            }}>{isMobile ? 'Tap a card' : 'Click a card, or press 1 / 2 / 3'}</div>
           </div>
         </div>
       )}
@@ -3005,6 +3168,7 @@ export default function BowSandbox() {
           onlineScores={onlineScores}
           onlineReady={onlineReady}
           myIdentityHex={myIdentityHex}
+          isMobile={isMobile}
           onRestart={() => {
             // Reset sets awaitingStart=true, then startGame immediately
             // flips it off and spawns the welcome grunt — the player skips
@@ -3029,10 +3193,42 @@ export default function BowSandbox() {
           onlineReady={onlineReady}
           myIdentityHex={myIdentityHex}
           submitTs={lastScoreTs}
+          isMobile={isMobile}
         />
       )}
 
-      <AttributionLinks />
+      <AttributionLinks hidden={isMobile && !hud.awaitingStart} />
+
+      {/* Pause button — only during active play. Hidden on menu/levelup/
+          dead/paused (the pause modal already has its own resume button). */}
+      {!hud.awaitingStart && !hud.dead && !hud.levelUpPending && !hud.paused && (
+        <button
+          type="button"
+          onClick={() => togglePauseRef.current?.()}
+          data-no-draw-start
+          aria-label="Pause"
+          style={{
+            position: 'fixed', top: 16, right: 16, zIndex: 16,
+            width: 44, height: 44, padding: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+            background: 'rgba(20,24,36,0.55)',
+            border: '1px solid rgba(170,200,255,0.35)',
+            borderRadius: 6,
+            cursor: 'pointer', pointerEvents: 'auto',
+            boxShadow: '0 0 10px rgba(0,0,0,0.4)',
+          }}
+        >
+          <span style={{ width: 5, height: 18, background: '#cce', borderRadius: 1 }} />
+          <span style={{ width: 5, height: 18, background: '#cce', borderRadius: 1 }} />
+        </button>
+      )}
+
+      {/* Virtual joysticks: only on touch-capable devices, and only while
+          the run is actually in progress (off on the start screen and after
+          death so they don't overlap the start/game-over UI). */}
+      {isMobile && !hud.awaitingStart && !hud.dead && !hud.levelUpPending && !hud.paused && (
+        <MobileControls bridgeRef={inputBridgeRef} />
+      )}
     </div>
   );
 }
@@ -3210,12 +3406,13 @@ function OnlineLeaderboard({ scores, myIdentityHex, submitTs, title = 'ONLINE LE
 // entry affiliation). `position: fixed` so it survives every overlay; the
 // container itself is `pointer-events: none` so only the two icon links are
 // interactive — they don't block click-through during gameplay.
-function AttributionLinks() {
+function AttributionLinks({ hidden = false }: { hidden?: boolean }) {
   const linkStyle: React.CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
     opacity: 0.7, transition: 'opacity 160ms ease',
     textDecoration: 'none', pointerEvents: 'auto',
   };
+  if (hidden) return null;
   return (
     <div style={{
       position: 'fixed', left: 20, bottom: 20,
@@ -3270,6 +3467,157 @@ function AttributionLinks() {
   );
 }
 
+// Single virtual joystick. Pointer events (not touch events) so it works for
+// the rare hybrid laptop with touchscreen + mouse, and for desktop testing.
+// `setPointerCapture` on the down event guarantees we keep receiving move/up
+// events even if the finger drags off the base — essential for fast aiming
+// where the player overshoots the pad.
+function Joystick({
+  side, onStart, onMove, onEnd,
+}: {
+  side: 'left' | 'right';
+  onStart?: () => void;
+  onMove?: (nx: number, ny: number) => void;        // -1..1, normalized stick offset
+  onEnd?: () => void;
+}) {
+  const baseRef = useRef<HTMLDivElement>(null);
+  const activePointerRef = useRef<number | null>(null);
+  const [knob, setKnob] = useState({ x: 0, y: 0 });
+
+  const SIZE = 150;
+  const KNOB = 64;
+  const RADIUS = (SIZE - KNOB) / 2;
+
+  const reset = () => {
+    activePointerRef.current = null;
+    setKnob({ x: 0, y: 0 });
+    // No onMove(0,0) here — the right stick uses the last drag position as
+    // the aim direction at release time, so resetting it would zero the aim
+    // and the arrow would fire degenerately. The left stick stops movement
+    // via its own onEnd handler (setMove(0,0)) instead.
+    onEnd?.();
+  };
+
+  const handleDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activePointerRef.current !== null) return;
+    activePointerRef.current = e.pointerId;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    onStart?.();
+    // Treat the press itself as a stick at center; subsequent moves update.
+    onMove?.(0, 0);
+  };
+  const handleMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerId !== activePointerRef.current) return;
+    const rect = baseRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    let dx = e.clientX - cx;
+    let dy = e.clientY - cy;
+    const mag = Math.hypot(dx, dy);
+    if (mag > RADIUS) { dx = dx * RADIUS / mag; dy = dy * RADIUS / mag; }
+    setKnob({ x: dx, y: dy });
+    onMove?.(dx / RADIUS, dy / RADIUS);
+  };
+  const handleUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerId !== activePointerRef.current) return;
+    reset();
+  };
+
+  const sideOffset: React.CSSProperties =
+    side === 'left' ? { left: 24 } : { right: 24 };
+
+  return (
+    <div
+      ref={baseRef}
+      onPointerDown={handleDown}
+      onPointerMove={handleMove}
+      onPointerUp={handleUp}
+      onPointerCancel={handleUp}
+      data-no-draw-start
+      style={{
+        position: 'fixed',
+        bottom: 28,
+        ...sideOffset,
+        width: SIZE, height: SIZE,
+        borderRadius: '50%',
+        background: 'rgba(20,24,36,0.45)',
+        border: '2px solid rgba(170,200,255,0.35)',
+        boxShadow: '0 0 18px rgba(0,0,0,0.4)',
+        touchAction: 'none',
+        zIndex: 45,
+        pointerEvents: 'auto',
+        // Block native gesture handling (pull-to-refresh, text selection).
+        userSelect: 'none', WebkitUserSelect: 'none',
+        WebkitTapHighlightColor: 'transparent',
+      }}
+    >
+      <div style={{
+        position: 'absolute',
+        left: '50%', top: '50%',
+        width: KNOB, height: KNOB,
+        marginLeft: -KNOB / 2 + knob.x,
+        marginTop: -KNOB / 2 + knob.y,
+        borderRadius: '50%',
+        background: 'rgba(140,180,255,0.55)',
+        border: '2px solid rgba(200,220,255,0.85)',
+        boxShadow: '0 0 12px rgba(140,180,255,0.5)',
+        pointerEvents: 'none',
+      }} />
+    </div>
+  );
+}
+
+// Two virtual joysticks for touch devices: left = move, right = drag-to-aim
+// + release-to-fire (a press starts the bow draw, drag updates aim, release
+// looses the arrow). Right stick projects its offset to a virtual mouse
+// position relative to the player on screen, so all the existing aim math
+// (bow render, camera lookahead, fire direction) reads it without changes.
+function MobileControls({
+  bridgeRef,
+}: {
+  bridgeRef: React.RefObject<InputBridge | null>;
+}) {
+  // How far the virtual mouse sits from the player on screen — large enough
+  // that aim direction reads cleanly. Aim direction is just (mouse - player)
+  // normalized, so the magnitude doesn't matter to the fire vector, but the
+  // cursor ring sits at this distance.
+  const AIM_PROJECTION = 180;
+
+  const handleAimMove = (nx: number, ny: number) => {
+    const b = bridgeRef.current;
+    if (!b) return;
+    const ps = b.getPlayerScreen();
+    b.setMouse(ps.x + nx * AIM_PROJECTION, ps.y + ny * AIM_PROJECTION);
+  };
+
+  return (
+    <>
+      <Joystick
+        side="left"
+        onMove={(nx, ny) => bridgeRef.current?.setMove(nx, ny)}
+        onEnd={() => bridgeRef.current?.setMove(0, 0)}
+      />
+      <Joystick
+        side="right"
+        onStart={() => {
+          // Plant the virtual mouse straight ahead so the first frame has a
+          // valid aim before the player moves their thumb.
+          const b = bridgeRef.current;
+          if (b) {
+            const ps = b.getPlayerScreen();
+            b.setMouse(ps.x, ps.y - AIM_PROJECTION);
+          }
+          bridgeRef.current?.pressDraw();
+        }}
+        onMove={handleAimMove}
+        onEnd={() => bridgeRef.current?.releaseDraw()}
+      />
+    </>
+  );
+}
+
 function ControlsHint() {
   const key: React.CSSProperties = {
     minWidth: 30, height: 30, padding: '0 6px',
@@ -3313,6 +3661,7 @@ function StartScreen({
   playerName, onPlayerName, onStart,
   musicVol, sfxVol, onMusicVol, onSfxVol,
   scores, onlineScores, onlineReady, myIdentityHex, submitTs,
+  isMobile,
 }: {
   playerName: string;
   onPlayerName: (n: string) => void;
@@ -3325,25 +3674,50 @@ function StartScreen({
   onlineReady: boolean;
   myIdentityHex: string | null;
   submitTs: number | null;
+  isMobile: boolean;
 }) {
   // Empty draft when the stored name is still the default — we show it as a
   // placeholder instead so the field reads as inviting rather than prefilled.
   const [draft, setDraft] = useState(playerName === 'Bowman' ? '' : playerName);
   const commit = () => onPlayerName(draft);
+
+  const audioPanel = (
+    <div style={{ width: '100%', maxWidth: 280 }}>
+      <VolumeSlider label="Music" value={musicVol} onChange={onMusicVol} accent="#66aaff" />
+      <VolumeSlider label="Sound effects" value={sfxVol} onChange={onSfxVol} accent="#ffaa66" />
+    </div>
+  );
+  const leaderboards = (
+    <div style={{ width: '100%', maxWidth: 280, display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <Leaderboard scores={scores} title="LOCAL LEADERBOARD" />
+      <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} submitTs={submitTs} />
+    </div>
+  );
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
       zIndex: 30, fontFamily: 'monospace',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      // On mobile we stack everything vertically inside the centered modal
+      // and let the backdrop scroll. On desktop the side panels float
+      // absolutely and the modal stays vertically centered.
+      // The 140px bottom padding reserves space for the bow/arrows/item
+      // strip pinned at the bottom of the HUD — the menu must never cover
+      // it (it's the loadout the player is about to take into the run).
+      display: 'flex',
+      alignItems: isMobile ? 'flex-start' : 'center',
+      justifyContent: 'center',
+      overflowY: isMobile ? 'auto' : 'hidden',
+      padding: isMobile ? '20px 12px 140px 12px' : '20px 0 140px 0',
       animation: 'fadeIn 240ms ease forwards',
     }}>
-      {/* Centered menu — single column so the name + controls read first.
-          Flex on the backdrop handles centering; the leaderboard sits in
-          absolute positioning so it doesn't shift this modal off-center. */}
       <div style={{
         background: 'rgba(20,22,32,0.96)', border: '1px solid #445',
-        borderRadius: 12, padding: '28px 32px', width: 420, maxWidth: '92vw',
-        maxHeight: '92vh', overflowY: 'auto',
+        borderRadius: 12, padding: isMobile ? '20px 18px' : '28px 32px',
+        width: isMobile ? '100%' : 420,
+        maxWidth: isMobile ? 480 : '92vw',
+        maxHeight: isMobile ? 'none' : 'calc(100vh - 180px)',
+        overflowY: isMobile ? 'visible' : 'auto',
         animation: 'scaleIn 280ms cubic-bezier(0.22, 0.9, 0.3, 1.1) forwards',
       }}>
         <div style={{
@@ -3373,9 +3747,12 @@ function StartScreen({
           />
         </div>
 
-        <div style={{ marginBottom: 22 }}>
-          <ControlsHint />
-        </div>
+        {/* Keyboard layout hint is desktop-only — irrelevant on touch. */}
+        {!isMobile && (
+          <div style={{ marginBottom: 22 }}>
+            <ControlsHint />
+          </div>
+        )}
 
         <button
           type="button"
@@ -3390,33 +3767,41 @@ function StartScreen({
             cursor: 'pointer', boxShadow: '0 0 14px rgba(90,140,255,0.45)',
           }}
         >START</button>
-        <div style={{
-          marginTop: 14, fontSize: 10, color: '#667', letterSpacing: 1,
-          textAlign: 'center',
-        }}>or just click and hold to draw</div>
+        {!isMobile && (
+          <div style={{
+            marginTop: 14, fontSize: 10, color: '#667', letterSpacing: 1,
+            textAlign: 'center',
+          }}>or just click and hold to draw</div>
+        )}
+
+        {/* Mobile: leaderboards + audio inline below the start button so the
+            whole menu reads top-to-bottom in one scroll. */}
+        {isMobile && (
+          <div style={{
+            marginTop: 24, display: 'flex', flexDirection: 'column',
+            alignItems: 'center', gap: 22,
+          }}>
+            {leaderboards}
+            {audioPanel}
+          </div>
+        )}
       </div>
 
-      {/* Detached audio panel — mirrors the leaderboard on the right so
-          volume controls stay reachable without crowding the menu. */}
-      <div style={{
-        position: 'absolute', left: 40, top: '50%',
-        transform: 'translateY(-50%)',
-        width: 280,
-      }}>
-        <VolumeSlider label="Music" value={musicVol} onChange={onMusicVol} accent="#66aaff" />
-        <VolumeSlider label="Sound effects" value={sfxVol} onChange={onSfxVol} accent="#ffaa66" />
-      </div>
-
-      {/* Detached leaderboard panel — pinned to the right of the viewport
-          so it stays visible but doesn't crowd the opening menu. */}
-      <div style={{
-        position: 'absolute', right: 40, top: '50%',
-        transform: 'translateY(-50%)',
-        width: 280, display: 'flex', flexDirection: 'column', gap: 18,
-      }}>
-        <Leaderboard scores={scores} title="LOCAL LEADERBOARD" />
-        <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} submitTs={submitTs} />
-      </div>
+      {/* Desktop side panels — floated either side of the centered modal. */}
+      {!isMobile && (
+        <>
+          <div style={{
+            position: 'absolute', left: 40, top: '50%',
+            transform: 'translateY(-50%)',
+            width: 280,
+          }}>{audioPanel}</div>
+          <div style={{
+            position: 'absolute', right: 40, top: '50%',
+            transform: 'translateY(-50%)',
+            width: 280,
+          }}>{leaderboards}</div>
+        </>
+      )}
     </div>
   );
 }
@@ -3428,6 +3813,7 @@ function GameOverScreen({
   level, kills, damageDealt, timeSurvived,
   scores, highlightTs, submitTs, onRestart,
   onlineScores, onlineReady, myIdentityHex,
+  isMobile,
 }: {
   level: number; kills: number; damageDealt: number; timeSurvived: number;
   scores: Score[];
@@ -3437,22 +3823,38 @@ function GameOverScreen({
   onlineScores: readonly OnlineScore[];
   onlineReady: boolean;
   myIdentityHex: string | null;
+  isMobile: boolean;
 }) {
+  const leaderboards = (
+    <div style={{ width: '100%', maxWidth: 280, display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <Leaderboard scores={scores} highlightTs={highlightTs} title="LOCAL LEADERBOARD" />
+      <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} submitTs={submitTs} />
+    </div>
+  );
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
       zIndex: 20, color: '#fff', fontFamily: 'monospace',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      // Mobile: top-aligned + scrollable so AGAIN is reachable above the
+      // leaderboard, and the whole thing scrolls if it exceeds viewport.
+      // 140px bottom padding leaves the loadout strip uncovered, matching
+      // the start screen.
+      display: 'flex',
+      alignItems: isMobile ? 'flex-start' : 'center',
+      justifyContent: 'center',
+      overflowY: isMobile ? 'auto' : 'hidden',
+      padding: isMobile ? '20px 12px 140px 12px' : '20px 0 140px 0',
       animation: 'fadeIn 360ms ease forwards',
     }}>
-      {/* Centered menu — single column so the death summary + AGAIN read as
-          one sharp focal point. Flex on the backdrop handles centering; the
-          leaderboard sits in absolute positioning so it doesn't shift this
-          modal off-center. */}
       <div style={{
         background: 'rgba(20,20,30,0.92)', border: '1px solid #ff4466',
-        borderRadius: 10, padding: '24px 32px', width: 380, maxWidth: '92vw',
-        maxHeight: '92vh', overflowY: 'auto', textAlign: 'center',
+        borderRadius: 10, padding: isMobile ? '20px 18px' : '24px 32px',
+        width: isMobile ? '100%' : 380,
+        maxWidth: isMobile ? 480 : '92vw',
+        maxHeight: isMobile ? 'none' : 'calc(100vh - 180px)',
+        overflowY: isMobile ? 'visible' : 'auto',
+        textAlign: 'center',
         animation: 'scaleIn 380ms cubic-bezier(0.22, 0.9, 0.3, 1.1) forwards',
       }}>
         <div style={{
@@ -3491,29 +3893,34 @@ function GameOverScreen({
             opacity: 0, animation: 'fadeUp 420ms ease forwards 540ms',
           }}
         >AGAIN</button>
-        <div style={{
-          marginTop: 10, fontSize: 10, color: '#667', letterSpacing: 1,
-          opacity: 0, animation: 'fadeIn 500ms ease forwards 760ms',
-        }}>or press R</div>
+        {!isMobile && (
+          <div style={{
+            marginTop: 10, fontSize: 10, color: '#667', letterSpacing: 1,
+            opacity: 0, animation: 'fadeIn 500ms ease forwards 760ms',
+          }}>or press R</div>
+        )}
+
+        {/* Mobile: leaderboards inline below AGAIN. */}
+        {isMobile && (
+          <div style={{
+            marginTop: 24, display: 'flex', justifyContent: 'center',
+            opacity: 0, animation: 'fadeIn 420ms ease forwards 600ms',
+          }}>{leaderboards}</div>
+        )}
       </div>
 
-      {/* Detached leaderboard panel — pinned to the right of the viewport
-          to match the start screen's layout. Wrapper handles the vertical
-          centering (translateY -50%); inner div handles the fade-in so the
-          animation's own transform doesn't clobber the centering. */}
-      <div style={{
-        position: 'absolute', right: 40, top: '50%',
-        transform: 'translateY(-50%)',
-        width: 280,
-      }}>
+      {!isMobile && (
         <div style={{
-          display: 'flex', flexDirection: 'column', gap: 18,
-          opacity: 0, animation: 'fadeIn 420ms ease forwards 420ms',
+          position: 'absolute', right: 40, top: '50%',
+          transform: 'translateY(-50%)',
+          width: 280,
         }}>
-          <Leaderboard scores={scores} highlightTs={highlightTs} title="LOCAL LEADERBOARD" />
-          <OnlineLeaderboard scores={onlineScores} ready={onlineReady} myIdentityHex={myIdentityHex} submitTs={submitTs} />
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 18,
+            opacity: 0, animation: 'fadeIn 420ms ease forwards 420ms',
+          }}>{leaderboards}</div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

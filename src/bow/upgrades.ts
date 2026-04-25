@@ -96,7 +96,7 @@ export const UPGRADES: Upgrade[] = [
   { id: 'draw',      kind: 'mod', name: '+10% Draw Speed',     desc: 'Bow reaches full draw 10% faster.',       weight: 8,  maxStacks: 3 },
   { id: 'reload',    kind: 'mod', name: '+20% Reload',         desc: 'Arrows replenish 20% faster.',            weight: 8,  maxStacks: 3 },
   { id: 'arrowspd',  kind: 'mod', name: '+10% Arrow Range',    desc: 'Arrows fly 10% farther (same draw).',     weight: 7,  maxStacks: 3 },
-  { id: 'quiver',    kind: 'mod', name: '+1 Quiver Slot',      desc: 'Carry one more arrow. Refills you.',      weight: 6,  maxStacks: 3 },
+  { id: 'quiver',    kind: 'mod', name: '+1 Max Arrows',       desc: 'Carry one more arrow. Refills you.',      weight: 6,  maxStacks: 3 },
   { id: 'hp',        kind: 'mod', name: '+1 Max HP',           desc: 'One more health rectangle. Fully heals.', weight: 6,  maxStacks: 3 },
   { id: 'item-power', kind: 'mod', name: 'Item Power',         desc: 'Makes your equipped item stronger.',      weight: 6,  maxStacks: 3, blockIfItem: 'none' },
   // Healing mod — only appears once HP has been maxed (3 stacks). Fully heals.
