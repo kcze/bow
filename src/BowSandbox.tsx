@@ -3770,12 +3770,6 @@ function StartScreen({
             cursor: 'pointer', boxShadow: '0 0 14px rgba(90,140,255,0.45)',
           }}
         >START</button>
-        {!isMobile && (
-          <div style={{
-            marginTop: 14, fontSize: 10, color: '#667', letterSpacing: 1,
-            textAlign: 'center',
-          }}>or just click and hold to draw</div>
-        )}
 
         {/* Mobile: leaderboards + audio inline below the start button so the
             whole menu reads top-to-bottom in one scroll. */}
